@@ -11,6 +11,13 @@ Regular scan results are published under http://odns.secnow.net.
 The data of the last scan can be accessed via an API on https://odns-data.netd.cs.tu-dresden.de/. 
 
 # Usage
+## Module select
+```
+    help
+        Displays all Modules with Discription
+```
+
+## Module: Scanner
 ```
   -c, --config [string]
     	Path to configuration file
