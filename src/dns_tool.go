@@ -34,140 +34,186 @@ func stop_profiling() {
 	cpu_file.Close()
 }
 
-func main() {
-	var (
-		help_flag       = flag.Bool("help", false, "Display help")
-		mode_flag       = flag.String("mode", "", "available modes: (s)scan, (t)trace,traceroute")
-		mode_alias      = flag.String("m", "", "alias for -mode")
-		prot_flag       = flag.String("protocol", "", "available protocols: tcp, udp")
-		prot_alias      = flag.String("p", "", "alias for -protocol")
-		config_path     = flag.String("config", "", "Path to configuration file")
-		config_alias    = flag.String("c", "", "alias for -config")
-		pktrate         = flag.Int("rate", -2, "packet rate in pkt/s, -1 for unlimited")
-		pktrate_alias   = flag.Int("r", -2, "alias for rate")
-		outpath         = flag.String("out", "", "output file path")
-		outpath_alias   = flag.String("o", "", "alias for out")
-		profile         = flag.Bool("profile", false, "enable cpu profiling (output file: cpu.prof)")
-		debug_level     = flag.Int("verbose", -1, "overwrites the debug level set in the config")
-		debug_alias     = flag.Int("v", -1, "alias for -verbose")
-		ethernet_header = flag.Bool("ethernet", false, "dns_tool will manually craft the ethernet header")
-		ethernet_alias  = flag.Bool("e", false, "alias for -ethernet")
-		qname           = flag.String("qname", "", "overwrites config dns query name")
-		qname_alias     = flag.String("q", "", "alias for -qname")
-		port            = flag.Int("port", -1, "overwrites the port set in config file")
-	)
+type SubCommand struct {
+	fs *flag.FlagSet
 
-	flag.Parse()
-	fmt.Println("Remaining args:", flag.Args())
+	name        string
+	description string
+}
 
-	if *help_flag {
-		flag.Usage()
-		return
-	}
+func (sc *SubCommand) Name() string {
+	return sc.fs.Name()
+}
+func (sc *SubCommand) Init(args []string) error {
+	return sc.fs.Parse(args)
+}
+func (sc *SubCommand) Description() string {
+	return sc.description
+}
 
-	if *mode_alias != "" {
-		mode_flag = mode_alias
-	}
-	if *prot_alias != "" {
-		prot_flag = prot_alias
-	}
-	if *config_alias != "" {
-		config_path = config_alias
-	}
-	if *debug_alias > -1 {
-		debug_level = debug_alias
-	}
-	if *pktrate_alias > -2 {
-		pktrate = pktrate_alias
-	}
-	if *outpath_alias != "" {
-		outpath = outpath_alias
-	}
-	if *qname_alias != "" {
-		qname = qname_alias
-	}
-	config.Cfg.Craft_ethernet = *ethernet_alias || *ethernet_header
+type Runner interface {
+	Run() (error, int)
+	Name() string
+	Init([]string) error
+	Description() string
+}
 
-	if *config_path != "" {
-		fmt.Println("using config", *config_path)
-		config.Load_config(*config_path)
+type ScannerCommand struct {
+	SubCommand
+	help_flag       bool
+	mode_flag       string
+	mode_alias      string
+	prot_flag       string
+	prot_alias      string
+	config_path     string
+	config_alias    string
+	pktrate         int
+	pktrate_alias   int
+	outpath         string
+	outpath_alias   string
+	profile         bool
+	debug_level     int
+	debug_alias     int
+	ethernet_header bool
+	ethernet_alias  bool
+	qname           string
+	qname_alias     string
+	port            int
+}
+
+func NewScannerCommand() *ScannerCommand {
+	sc := &ScannerCommand{
+		SubCommand: SubCommand{
+			fs:          flag.NewFlagSet("scanner", flag.ContinueOnError),
+			description: "Measure the open DNS infrastructure over IPv4 using TCP/UDP",
+		},
+	}
+	sc.fs.BoolVar(&sc.help_flag, "help", false, "Display help")
+	sc.fs.StringVar(&sc.mode_flag, "mode", "", "available modes: (s)scan, (t)trace,traceroute")
+	sc.fs.StringVar(&sc.mode_alias, "m", "", "alias for -mode")
+	sc.fs.StringVar(&sc.prot_flag, "protocol", "", "available protocols: tcp, udp")
+	sc.fs.StringVar(&sc.prot_alias, "p", "", "alias for -protocol")
+	sc.fs.StringVar(&sc.config_path, "config", "", "Path to configuration file")
+	sc.fs.StringVar(&sc.config_alias, "c", "", "alias for -config")
+	sc.fs.IntVar(&sc.pktrate, "rate", -2, "packet rate in pkt/s, -1 for unlimited")
+	sc.fs.IntVar(&sc.pktrate_alias, "r", -2, "alias for -rate")
+	sc.fs.StringVar(&sc.outpath, "out", "", "output file path")
+	sc.fs.StringVar(&sc.outpath_alias, "o", "", "alias for -out")
+	sc.fs.BoolVar(&sc.profile, "profile", false, "enable cpu profiling (output file: cpu.prof")
+	sc.fs.IntVar(&sc.debug_level, "verbose", -1, "overwrites the debug level set in the config")
+	sc.fs.IntVar(&sc.debug_alias, "v", -1, "alias for -verbose")
+	sc.fs.BoolVar(&sc.ethernet_header, "ethernet", false, "dns_tool will manually craft the ethernet header")
+	sc.fs.BoolVar(&sc.ethernet_alias, "e", false, "alias for -ethernet")
+	sc.fs.StringVar(&sc.qname, "qname", "", "overwrites config dns query name")
+	sc.fs.StringVar(&sc.qname_alias, "q", "", "alias for -qname")
+	sc.fs.IntVar(&sc.port, "port", -1, "overwrites the port set in config file")
+
+	return sc
+}
+
+func (sc *ScannerCommand) Run() (error, int) {
+	if sc.help_flag {
+		sc.fs.Usage()
+		return nil, 0
+	}
+	if sc.mode_alias != "" {
+		sc.mode_flag = sc.mode_alias
+	}
+	if sc.prot_alias != "" {
+		sc.prot_flag = sc.prot_alias
+	}
+	if sc.config_alias != "" {
+		sc.config_path = sc.config_alias
+	}
+	if sc.debug_alias > -1 {
+		sc.debug_level = sc.debug_alias
+	}
+	if sc.pktrate_alias > -2 {
+		sc.pktrate = sc.pktrate_alias
+	}
+	if sc.outpath_alias != "" {
+		sc.outpath = sc.outpath_alias
+	}
+	if sc.qname_alias != "" {
+		sc.qname = sc.qname_alias
+	}
+	config.Cfg.Craft_ethernet = sc.ethernet_alias || sc.ethernet_header
+
+	if sc.config_path != "" {
+		fmt.Println("using config", sc.config_path)
+		config.Load_config(sc.config_path)
 	} else {
-		fmt.Println("missing config path")
-		os.Exit(int(common.WRONG_INPUT_ARGS))
+		return fmt.Errorf("missing config path"), int(common.WRONG_INPUT_ARGS)
 	}
 
-	if *pktrate > -2 {
-		config.Cfg.Pkts_per_sec = *pktrate
+	if sc.pktrate > -2 {
+		config.Cfg.Pkts_per_sec = sc.pktrate
 	}
 
-	if *qname != "" {
-		config.Cfg.Dns_query = *qname
+	if sc.qname != "" {
+		config.Cfg.Dns_query = sc.qname
 	}
 
-	if *debug_level > -1 {
-		fmt.Println("verbosity level set to", *debug_level)
-		config.Cfg.Verbosity = *debug_level
+	if sc.debug_level > -1 {
+		fmt.Println("verbosity level set to", sc.debug_level)
+		config.Cfg.Verbosity = sc.debug_level
 	}
 
-	if *port != -1 {
-		config.Cfg.Dst_port = uint16(*port)
+	if sc.port != -1 {
+		config.Cfg.Dst_port = uint16(sc.port)
 	}
 
 	fmt.Println("config:", config.Cfg)
 
-	if *profile {
+	if sc.profile {
 		// go tool pprof -http=:8080 cpu.prof
 		start_profiling()
 	}
 
-	if *mode_flag != "" {
-		switch *mode_flag {
+	if sc.mode_flag != "" {
+		switch sc.mode_flag {
 		case "s":
 			fallthrough
 		case "scan":
-			if *prot_flag == "" {
-				fmt.Println("missing protocol")
-				os.Exit(int(common.WRONG_INPUT_ARGS))
+			if sc.prot_flag == "" {
+				return fmt.Errorf("missing protocol"), int(common.WRONG_INPUT_ARGS)
 			}
-			switch *prot_flag {
+			switch sc.prot_flag {
 			case "tcp":
 				fmt.Println("starting tcp scan")
 				logging.Runlog_prefix = "TCP-SCAN"
 				var tcp_scanner tcpscanner.Tcp_scanner
-				if *outpath == "" {
-					*outpath = "tcp_results.csv.gz"
+				if sc.outpath == "" {
+					sc.outpath = "tcp_results.csv.gz"
 				}
-				tcp_scanner.Start_scan(flag.Args(), *outpath)
+				tcp_scanner.Start_scan(sc.fs.Args(), sc.outpath)
 			case "udp":
 				fmt.Println("starting udp scan")
 				logging.Runlog_prefix = "UDP-SCAN"
 				var udp_scanner udpscanner.Udp_scanner
-				if *outpath == "" {
-					*outpath = "udp_results.csv.gz"
+				if sc.outpath == "" {
+					sc.outpath = "udp_results.csv.gz"
 				}
-				udp_scanner.Start_scan(flag.Args(), *outpath)
+				udp_scanner.Start_scan(sc.fs.Args(), sc.outpath)
 			default:
-				fmt.Println("wrong protocol")
-				os.Exit(int(common.WRONG_INPUT_ARGS))
+				return fmt.Errorf("wrong protocol"), int(common.WRONG_INPUT_ARGS)
 			}
 		case "t":
 			fallthrough
 		case "trace":
 			fallthrough
 		case "traceroute":
-			if *prot_flag == "" {
-				fmt.Println("missing protocol")
-				os.Exit(int(common.WRONG_INPUT_ARGS))
+			if sc.prot_flag == "" {
+				return fmt.Errorf("missing protocol"), int(common.WRONG_INPUT_ARGS)
 			}
-			switch *prot_flag {
+			switch sc.prot_flag {
 			case "tcp":
 				fmt.Println("starting tcp traceroute")
 				logging.Runlog_prefix = "TCP-Traceroute"
 				var tcp_traceroute traceroute_tcp.Tcp_traceroute
-				tcp_traceroute.Start_traceroute(flag.Args())
+				tcp_traceroute.Start_traceroute(sc.fs.Args())
 			default:
-				fmt.Println("wrong protocol")
-				os.Exit(int(common.WRONG_INPUT_ARGS))
+				return fmt.Errorf("wrong protocol"), int(common.WRONG_INPUT_ARGS)
 			}
 		case "r":
 			fallthrough
@@ -175,22 +221,54 @@ func main() {
 			fallthrough
 		case "ratelimit":
 			var rate_tester ratelimit.Rate_tester
-			if *outpath == "" {
-				*outpath = "ratelimit_results"
+			if sc.outpath == "" {
+				sc.outpath = "ratelimit_results"
 			}
 			fmt.Println("starting ratelimit testing")
 			logging.Runlog_prefix = "Ratelimit"
-			rate_tester.Start_ratetest(flag.Args(), *outpath)
+			rate_tester.Start_ratetest(sc.fs.Args(), sc.outpath)
 		default:
-			fmt.Println("wrong mode:", *mode_flag)
-			os.Exit(int(common.WRONG_INPUT_ARGS))
+			return fmt.Errorf(fmt.Sprint("wrong mode:", sc.mode_flag)), int(common.WRONG_INPUT_ARGS)
 		}
 	} else {
-		fmt.Println("missing mode (--mode)")
-		os.Exit(int(common.WRONG_INPUT_ARGS))
+		return fmt.Errorf("missing mode (--mode)"), int(common.WRONG_INPUT_ARGS)
 	}
 
-	if *profile {
+	if sc.profile {
 		stop_profiling()
+	}
+	return nil, 0
+}
+
+func base(args []string) (error, int) {
+	if len(args) < 1 {
+		return fmt.Errorf("You must choose what to do!"), int(common.WRONG_INPUT_ARGS)
+	}
+
+	cmds := []Runner{
+		NewScannerCommand(),
+	}
+
+	if args[0] == "help" {
+		for _, cmd := range cmds {
+			fmt.Println(cmd.Name(), "\t", cmd.Description())
+		}
+		return nil, 0
+	}
+
+	for _, cmd := range cmds {
+		if cmd.Name() == args[0] {
+			cmd.Init(args[1:])
+			return cmd.Run()
+		}
+	}
+
+	return fmt.Errorf("Unknown Subcommand"), 1
+}
+
+func main() {
+	if err, code := base(os.Args[1:]); err != nil {
+		fmt.Println(err)
+		os.Exit(code)
 	}
 }
