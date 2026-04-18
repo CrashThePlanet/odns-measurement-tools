@@ -11,7 +11,10 @@ Regular scan results are published under http://odns.secnow.net.
 The data of the last scan can be accessed via an API on https://odns-data.netd.cs.tu-dresden.de/. 
 
 # Usage
-## Module select
+```
+    ./dns_tool [module] [args...]
+```
+## Module: help
 ```
     help
         Displays all Modules with Discription
