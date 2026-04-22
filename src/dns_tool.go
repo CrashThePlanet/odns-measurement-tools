@@ -4,6 +4,7 @@ import (
 	"dns_tools/common"
 	"dns_tools/config"
 	"dns_tools/logging"
+	qmin_dnsserver "dns_tools/qmin/dns_server"
 	"dns_tools/ratelimit"
 	tcpscanner "dns_tools/scanner/tcp"
 	udpscanner "dns_tools/scanner/udp"
@@ -228,7 +229,7 @@ func (sc *ScannerCommand) Run() (error, int) {
 			logging.Runlog_prefix = "Ratelimit"
 			rate_tester.Start_ratetest(sc.fs.Args(), sc.outpath)
 		default:
-			return fmt.Errorf(fmt.Sprint("wrong mode:", sc.mode_flag)), int(common.WRONG_INPUT_ARGS)
+			return fmt.Errorf("%s", fmt.Sprint("wrong mode:", sc.mode_flag)), int(common.WRONG_INPUT_ARGS)
 		}
 	} else {
 		return fmt.Errorf("missing mode (--mode)"), int(common.WRONG_INPUT_ARGS)
@@ -240,6 +241,75 @@ func (sc *ScannerCommand) Run() (error, int) {
 	return nil, 0
 }
 
+type QMinServerCommand struct {
+	SubCommand
+	help_flag       bool
+	port_flag       int
+	port_alias      int
+	ip              string
+	baseUrl_flag    string
+	baseUrl_alias   string
+	address_flag    string
+	address_alias   string
+	timeout_flag    int
+	sleepCycle_flag int
+}
+
+func NewQMinServerCommand() *QMinServerCommand {
+	sc := &QMinServerCommand{
+		SubCommand: SubCommand{
+			fs:          flag.NewFlagSet("qmin_server", flag.ContinueOnError),
+			description: "Starts up a DNS Server for Qmin testing of DNS Resolver",
+		},
+	}
+	sc.fs.BoolVar(&sc.help_flag, "help", false, "Display help")
+	sc.fs.IntVar(&sc.port_flag, "port", 5353, "Port on which the DNS runs. <1000 requires root")
+	sc.fs.IntVar(&sc.port_alias, "p", 5353, "alias for --port")
+	sc.fs.StringVar(&sc.baseUrl_flag, "url", "", "Url for which the DNS is authoritve Server")
+	sc.fs.StringVar(&sc.baseUrl_alias, "u", "", "alias for --url")
+	sc.fs.StringVar(&sc.address_flag, "address", "0.0.0.0", "ip on which the server listens")
+	sc.fs.StringVar(&sc.address_alias, "a", "0.0.0.0", "alias for --address")
+	sc.fs.IntVar(&sc.timeout_flag, "timeout", 10000, "Min age (in ms) after which an entry is cleared")
+	sc.fs.IntVar(&sc.sleepCycle_flag, "sleep", 5100, "How often (in ms) a cleanup of entries is run")
+	sc.fs.StringVar(&sc.ip, "ip", "", "Public ip")
+
+	return sc
+}
+
+func (qc *QMinServerCommand) Run() (error, int) {
+	if qc.help_flag {
+		qc.fs.Usage()
+		return nil, 0
+	}
+	if qc.port_alias != 5353 {
+		qc.port_flag = qc.port_alias
+	}
+	if qc.baseUrl_alias != "" {
+		qc.baseUrl_flag = qc.baseUrl_alias
+	}
+	if qc.address_alias != "0.0.0.0" {
+		qc.baseUrl_flag = qc.baseUrl_alias
+	}
+	if qc.port_flag < 1 || qc.port_flag > 65535 {
+		return fmt.Errorf("invalid port"), int(common.WRONG_INPUT_ARGS)
+	}
+	if qc.baseUrl_flag == "" {
+		return fmt.Errorf("missing URL"), int(common.WRONG_INPUT_ARGS)
+	}
+	// TODO check for invalid IPv4 addr
+	if qc.timeout_flag < 1 {
+		return fmt.Errorf("Timeout must be bigger than 0"), int(common.WRONG_INPUT_ARGS)
+	}
+	if qc.sleepCycle_flag < 1 {
+		return fmt.Errorf("Sleep Cycle must be longer than 0"), int(common.WRONG_INPUT_ARGS)
+	}
+
+	var server qmin_dnsserver.QminDnsServer
+	server.Start_server(qc.baseUrl_flag, qc.address_flag, qc.port_flag, qc.ip, qc.timeout_flag, qc.sleepCycle_flag)
+
+	return nil, 0
+}
+
 func base(args []string) (error, int) {
 	if len(args) < 1 {
 		return fmt.Errorf("You must choose what to do!"), int(common.WRONG_INPUT_ARGS)
@@ -247,6 +317,7 @@ func base(args []string) (error, int) {
 
 	cmds := []Runner{
 		NewScannerCommand(),
+		NewQMinServerCommand(),
 	}
 
 	if args[0] == "help" {

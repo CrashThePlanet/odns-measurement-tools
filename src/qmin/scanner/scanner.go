@@ -1,0 +1,1 @@
+package qmin_scanner
