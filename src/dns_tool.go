@@ -5,6 +5,7 @@ import (
 	"dns_tools/config"
 	"dns_tools/logging"
 	qmin_dnsserver "dns_tools/qmin/dns_server"
+	qmin_scanner "dns_tools/qmin/scanner"
 	"dns_tools/ratelimit"
 	tcpscanner "dns_tools/scanner/tcp"
 	udpscanner "dns_tools/scanner/udp"
@@ -310,6 +311,35 @@ func (qc *QMinServerCommand) Run() (error, int) {
 	return nil, 0
 }
 
+type QMinScannerCommand struct {
+	SubCommand
+	help_flag bool
+}
+
+func NewQMinScannerCommand() *QMinScannerCommand {
+	sc := &QMinScannerCommand{
+		SubCommand: SubCommand{
+			fs:          flag.NewFlagSet("qmin_scanner", flag.ContinueOnError),
+			description: "Starts the QMin Scanner to test Resolvers",
+		},
+	}
+	sc.fs.BoolVar(&sc.help_flag, "help", false, "Display help")
+
+	return sc
+}
+
+func (qsc *QMinScannerCommand) Run() (error, int) {
+	if qsc.help_flag {
+		qsc.fs.Usage()
+		return nil, 0
+	}
+
+	var scanner qmin_scanner.QMinScanner
+	scanner.Start_scan()
+
+	return nil, 0
+}
+
 func base(args []string) (error, int) {
 	if len(args) < 1 {
 		return fmt.Errorf("You must choose what to do!"), int(common.WRONG_INPUT_ARGS)
@@ -318,6 +348,7 @@ func base(args []string) (error, int) {
 	cmds := []Runner{
 		NewScannerCommand(),
 		NewQMinServerCommand(),
+		NewQMinScannerCommand(),
 	}
 
 	if args[0] == "help" {
