@@ -2,7 +2,7 @@ package main
 
 import (
 	"dns_tools/common"
-	"dns_tools/config"
+	scanner_config "dns_tools/config"
 	"dns_tools/logging"
 	qmin_dnsserver "dns_tools/qmin/dns_server"
 	qmin_scanner "dns_tools/qmin/scanner"
@@ -139,33 +139,33 @@ func (sc *ScannerCommand) Run() (error, int) {
 	if sc.qname_alias != "" {
 		sc.qname = sc.qname_alias
 	}
-	config.Cfg.Craft_ethernet = sc.ethernet_alias || sc.ethernet_header
+	scanner_config.Cfg.Craft_ethernet = sc.ethernet_alias || sc.ethernet_header
 
 	if sc.config_path != "" {
 		fmt.Println("using config", sc.config_path)
-		config.Load_config(sc.config_path)
+		scanner_config.Load_config(sc.config_path)
 	} else {
 		return fmt.Errorf("missing config path"), int(common.WRONG_INPUT_ARGS)
 	}
 
 	if sc.pktrate > -2 {
-		config.Cfg.Pkts_per_sec = sc.pktrate
+		scanner_config.Cfg.Pkts_per_sec = sc.pktrate
 	}
 
 	if sc.qname != "" {
-		config.Cfg.Dns_query = sc.qname
+		scanner_config.Cfg.Dns_query = sc.qname
 	}
 
 	if sc.debug_level > -1 {
 		fmt.Println("verbosity level set to", sc.debug_level)
-		config.Cfg.Verbosity = sc.debug_level
+		scanner_config.Cfg.Verbosity = sc.debug_level
 	}
 
 	if sc.port != -1 {
-		config.Cfg.Dst_port = uint16(sc.port)
+		scanner_config.Cfg.Dst_port = uint16(sc.port)
 	}
 
-	fmt.Println("config:", config.Cfg)
+	fmt.Println("config:", scanner_config.Cfg)
 
 	if sc.profile {
 		// go tool pprof -http=:8080 cpu.prof
@@ -244,16 +244,9 @@ func (sc *ScannerCommand) Run() (error, int) {
 
 type QMinServerCommand struct {
 	SubCommand
-	help_flag       bool
-	port_flag       int
-	port_alias      int
-	ip              string
-	baseUrl_flag    string
-	baseUrl_alias   string
-	address_flag    string
-	address_alias   string
-	timeout_flag    int
-	sleepCycle_flag int
+	help_flag    bool
+	config_path  string
+	config_alias string
 }
 
 func NewQMinServerCommand() *QMinServerCommand {
@@ -264,15 +257,8 @@ func NewQMinServerCommand() *QMinServerCommand {
 		},
 	}
 	sc.fs.BoolVar(&sc.help_flag, "help", false, "Display help")
-	sc.fs.IntVar(&sc.port_flag, "port", 5353, "Port on which the DNS runs. <1000 requires root")
-	sc.fs.IntVar(&sc.port_alias, "p", 5353, "alias for --port")
-	sc.fs.StringVar(&sc.baseUrl_flag, "url", "", "Url for which the DNS is authoritve Server")
-	sc.fs.StringVar(&sc.baseUrl_alias, "u", "", "alias for --url")
-	sc.fs.StringVar(&sc.address_flag, "address", "0.0.0.0", "ip on which the server listens")
-	sc.fs.StringVar(&sc.address_alias, "a", "0.0.0.0", "alias for --address")
-	sc.fs.IntVar(&sc.timeout_flag, "timeout", 10000, "Min age (in ms) after which an entry is cleared")
-	sc.fs.IntVar(&sc.sleepCycle_flag, "sleep", 5100, "How often (in ms) a cleanup of entries is run")
-	sc.fs.StringVar(&sc.ip, "ip", "", "Public ip")
+	sc.fs.StringVar(&sc.config_path, "config", "qmin/dns_server/config.yml", "Path to config File")
+	sc.fs.StringVar(&sc.config_alias, "c", "", "alias for --config")
 
 	return sc
 }
@@ -282,31 +268,18 @@ func (qc *QMinServerCommand) Run() (error, int) {
 		qc.fs.Usage()
 		return nil, 0
 	}
-	if qc.port_alias != 5353 {
-		qc.port_flag = qc.port_alias
+	if qc.config_alias != "" {
+		qc.config_path = qc.config_alias
 	}
-	if qc.baseUrl_alias != "" {
-		qc.baseUrl_flag = qc.baseUrl_alias
-	}
-	if qc.address_alias != "0.0.0.0" {
-		qc.baseUrl_flag = qc.baseUrl_alias
-	}
-	if qc.port_flag < 1 || qc.port_flag > 65535 {
-		return fmt.Errorf("invalid port"), int(common.WRONG_INPUT_ARGS)
-	}
-	if qc.baseUrl_flag == "" {
-		return fmt.Errorf("missing URL"), int(common.WRONG_INPUT_ARGS)
-	}
-	// TODO check for invalid IPv4 addr
-	if qc.timeout_flag < 1 {
-		return fmt.Errorf("Timeout must be bigger than 0"), int(common.WRONG_INPUT_ARGS)
-	}
-	if qc.sleepCycle_flag < 1 {
-		return fmt.Errorf("Sleep Cycle must be longer than 0"), int(common.WRONG_INPUT_ARGS)
+	if qc.config_path != "" {
+		fmt.Println("using config", qc.config_path)
+		qmin_dnsserver.Load_config(qc.config_path)
+	} else {
+		return fmt.Errorf("missing config path"), int(common.WRONG_INPUT_ARGS)
 	}
 
 	var server qmin_dnsserver.QminDnsServer
-	server.Start_server(qc.baseUrl_flag, qc.address_flag, qc.port_flag, qc.ip, qc.timeout_flag, qc.sleepCycle_flag)
+	server.Start_server()
 
 	return nil, 0
 }

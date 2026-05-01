@@ -153,19 +153,19 @@ func (s *QminDnsServer) responder(w dns.ResponseWriter, r *dns.Msg) {
 	w.Close()
 }
 
-func (s *QminDnsServer) Start_server(url string, addr string, port int, ip string, to int, sc int) {
+func (s *QminDnsServer) Start_server() {
 
-	s.addr = addr
-	s.port = port
-	s.baseURL = url
-	s.ip = ip
-	s.sleepCycle = sc
-	s.timeout = to
+	s.addr = Cfg.ListenIp
+	s.port = Cfg.Port
+	s.baseURL = Cfg.BaseURL
+	s.ip = Cfg.IPAddr
+	s.sleepCycle = Cfg.SleepCycle
+	s.timeout = Cfg.Timeout
 
 	dns.HandleFunc(".", s.responder)
 	go s.cleanProbes()
-	server := &dns.Server{Addr: s.addr + ":" + strconv.Itoa(s.port), Net: "udp"}
-	fmt.Println("DNS server listining on:", s.addr, ":", s.port)
+	server := &dns.Server{Addr: s.addr + ":" + strconv.Itoa(s.port), Net: Cfg.Protocol}
+	fmt.Println("DNS server listining on:", s.addr, ":", s.port, ";Protocol:", Cfg.Protocol)
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

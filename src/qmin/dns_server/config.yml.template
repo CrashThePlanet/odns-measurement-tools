@@ -1,0 +1,7 @@
+BaseURL: <base Domain>
+ListenIp: 0.0.0.0
+Port: 53
+Protocol: udp
+IPAddr: <Public IP>
+Timeout: 5100
+SleepCycle: 10000
