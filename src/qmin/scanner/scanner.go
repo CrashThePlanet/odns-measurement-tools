@@ -34,7 +34,7 @@ type ScanStat struct {
 
 type QueryResult struct {
 	Ip     string
-	status int // -1: undefined error,  0: no error, 1: refused, 2: Servfail, 3: timeout, 4: NXDomain
+	status int // -1: undefined error,  0: no error, 1: refused, 2: Servfail, 3: timeout, 4: NXDomain, 5: No Route to host, 6: no recursion available, 7: no answer from resolver, 8: answer contains no TXT response
 	Res    string
 }
 
@@ -103,9 +103,9 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 	m.RecursionDesired = true
 
 	c := new(dns.Client)
-	c.Net = "udp"
+	c.Net = Cfg.Protocol
 	c.Timeout = timeout
-	res, _, err := c.Exchange(m, server+":53")
+	res, _, err := c.Exchange(m, server+":"+strconv.Itoa(Cfg.Port))
 
 	if err != nil {
 		if strings.Contains(err.Error(), "i/o timeout") {
@@ -114,34 +114,35 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		if strings.Contains(err.Error(), "connection refused") {
 			return QueryResult{Ip: server, status: 1, Res: "refused"}
 		}
+		if strings.Contains(err.Error(), "no route to host") {
+			return QueryResult{Ip: server, status: 5, Res: "noRoute"}
+		}
 		fmt.Println("unhandled error: ", err)
-		return QueryResult{Ip: server, status: -1, Res: "unhandled error"}
+		return QueryResult{Ip: server, status: -1, Res: "unhandledError"}
 	}
 
 	if res.Rcode != dns.RcodeSuccess {
 		switch res.Rcode {
 		case dns.RcodeServerFailure:
-			return QueryResult{Ip: server, status: 2, Res: "Server failed to complete request"}
+			return QueryResult{Ip: server, status: 2, Res: "servfail"}
 		case dns.RcodeNameError:
-			return QueryResult{Ip: server, status: 4, Res: "Domain does not exists on Server"}
+			return QueryResult{Ip: server, status: 4, Res: "nxdomain"}
 		case dns.RcodeRefused:
 			return QueryResult{Ip: server, status: 1, Res: "refused"}
 		default:
-			return QueryResult{Ip: server, status: -1, Res: "unhandled error"}
+			return QueryResult{Ip: server, status: -1, Res: "unhandledError"}
 		}
 	}
 	if len(res.Answer) == 0 {
 		if !res.RecursionAvailable {
-			return QueryResult{Ip: server, status: -1, Res: "no recursion available"}
+			return QueryResult{Ip: server, status: 6, Res: "noRecursion"}
 		}
-		return QueryResult{Ip: server, status: -1, Res: "no Awnser from Resolver"}
+		return QueryResult{Ip: server, status: 7, Res: "noAnswer"}
 	}
 	if t, ok := res.Answer[0].(*dns.TXT); ok {
 		return QueryResult{Ip: server, status: 0, Res: t.Txt[0]}
 	}
-	// fmt.Println(res.Answer[0])
-	// fmt.Println(res.Extra)
-	return QueryResult{Ip: server, status: -1, Res: "Answer doesn't contain TXT response"}
+	return QueryResult{Ip: server, status: 9, Res: "noTXTResponse"}
 }
 
 func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {

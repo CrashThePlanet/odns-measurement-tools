@@ -337,7 +337,6 @@ func base(args []string) (error, int) {
 	if len(args) < 1 {
 		return fmt.Errorf("You must choose what to do!"), int(common.WRONG_INPUT_ARGS)
 	}
-	fmt.Println(args)
 
 	cmds := []Runner{
 		NewScannerCommand(),
