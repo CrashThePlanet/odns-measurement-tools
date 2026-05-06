@@ -286,7 +286,9 @@ func (qc *QMinServerCommand) Run() (error, int) {
 
 type QMinScannerCommand struct {
 	SubCommand
-	help_flag bool
+	help_flag    bool
+	config_path  string
+	config_alias string
 }
 
 func NewQMinScannerCommand() *QMinScannerCommand {
@@ -297,6 +299,8 @@ func NewQMinScannerCommand() *QMinScannerCommand {
 		},
 	}
 	sc.fs.BoolVar(&sc.help_flag, "help", false, "Display help")
+	sc.fs.StringVar(&sc.config_path, "config", "qmin/scanner/config.yml", "Path to config file")
+	sc.fs.StringVar(&sc.config_alias, "c", "", "alais for --conmfig")
 
 	return sc
 }
@@ -306,9 +310,18 @@ func (qsc *QMinScannerCommand) Run() (error, int) {
 		qsc.fs.Usage()
 		return nil, 0
 	}
+	if qsc.config_alias != "" {
+		qsc.config_path = qsc.config_alias
+	}
+	if qsc.config_path != "" {
+		fmt.Println("using config", qsc.config_path)
+		qmin_scanner.Load_config(qsc.config_path)
+	} else {
+		return fmt.Errorf("missing config path"), int(common.WRONG_INPUT_ARGS)
+	}
 
 	var scanner qmin_scanner.QMinScanner
-	scanner.Start_scan()
+	scanner.Start_scan(qsc.fs.Args()[0])
 
 	return nil, 0
 }
@@ -317,6 +330,7 @@ func base(args []string) (error, int) {
 	if len(args) < 1 {
 		return fmt.Errorf("You must choose what to do!"), int(common.WRONG_INPUT_ARGS)
 	}
+	fmt.Println(args)
 
 	cmds := []Runner{
 		NewScannerCommand(),

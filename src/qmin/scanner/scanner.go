@@ -14,8 +14,8 @@ import (
 	"github.com/miekg/dns"
 )
 
-const baseDomain = "ba.tilhempel.info"
-const randMax = 100000
+var baseDomain string
+var randMax int
 
 type QueryResult struct {
 	Ip     string
@@ -229,14 +229,14 @@ func evalRsults(raw map[string][]QueryResult) map[string][3]string {
 	return out
 }
 
-func writeOutputCSV(data map[string][3]string) {
+func writeOutputCSV(data map[string][3]string, outPath string) {
 	var csvData = [][]string{}
 
 	for k, v := range data {
 		csvData = append(csvData, []string{k, v[0], v[1]})
 	}
 
-	file, err := os.Create(("./out.csv"))
+	file, err := os.Create(outPath)
 	if err != nil {
 		log.Fatalln("Couldn't create output file: ", err.Error())
 	}
@@ -263,24 +263,21 @@ func readCSV(path string) []string {
 	return ips
 }
 
-func (scan *QMinScanner) Start_scan() {
+func (scan *QMinScanner) Start_scan(inCSV string) {
 	start := time.Now()
 	server := readCSV("/home/Til/Downloads/apidownload/data/resolver.csv")
 	// server = server[7000:7050]
 	// server := []string{"9.9.9.9", "1.1.1.1", "8.8.8.8", "46.226.143.86", "34.28.223.99"}
 	// server := []string{"190.181.4.204"}
 
-	const depth = 24
-	const batchSize = 5000
-	const rounds = 50
-	const timeout = 5 * time.Second
-	const retryTimeout = 20 * time.Second
+	baseDomain = Cfg.BaseURL
+	randMax = Cfg.RandMax
 
-	fmt.Println("ETA:", (rounds * retryTimeout).String())
+	fmt.Println("ETA:", time.Duration(Cfg.Rounds*Cfg.RetryTimeout*int(time.Millisecond)).String())
 
-	responses := scanResolvers(server, depth, rounds, batchSize, timeout, retryTimeout)
+	responses := scanResolvers(server, Cfg.LabelDepth, Cfg.Rounds, Cfg.BatchSize, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
 	results := evalRsults(responses)
-	writeOutputCSV(results)
+	writeOutputCSV(results, Cfg.OutputDir)
 	fmt.Println("runtime: ", time.Since(start))
 
 }

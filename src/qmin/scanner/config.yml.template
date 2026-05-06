@@ -1,0 +1,10 @@
+BaseURL: <base Domain for requests. Must be served by dns server>
+Port: 53
+Protocol: upd 
+RandMax: 10000
+LabelDepth: 24
+BatchSize: 10000
+Round: 5
+Timeout: 5000
+RetryTimeout: 20000
+OutputDir: <path to file>
