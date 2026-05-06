@@ -59,7 +59,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	m.Authoritative = true
 
 	requestedDomain := strings.ToLower(r.Question[0].Name)
-	fmt.Println("requested Domain:", requestedDomain)
 	// some resolver prepend "_." to each request (except the fqdn with all tokens)
 	// it can be removed as this carries no information or significance
 	if requestedDomain[:2] == "_." {
