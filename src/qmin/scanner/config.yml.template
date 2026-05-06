@@ -7,4 +7,4 @@ BatchSize: 10000
 Round: 5
 Timeout: 5000
 RetryTimeout: 20000
-OutputDir: <path to file>
+OutputDir: <path output directory>

@@ -2,6 +2,7 @@ package qmin_scanner
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -16,6 +17,20 @@ import (
 
 var baseDomain string
 var randMax int
+
+type ScanStat struct {
+	Start        time.Time
+	Fin          time.Time
+	Runtime      string
+	Input        string
+	NumResolver  int
+	Timeout      int
+	RetryTimeout int
+	Protocol     string
+	LabelDepth   int
+	Rounds       int
+	BaseURL      string
+}
 
 type QueryResult struct {
 	Ip     string
@@ -263,21 +278,68 @@ func readCSV(path string) []string {
 	return ips
 }
 
-func (scan *QMinScanner) Start_scan(inCSV string) {
+func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
+	stats := ScanStat{
+		Input:        inArg,
+		Timeout:      Cfg.Timeout,
+		RetryTimeout: Cfg.RetryTimeout,
+		Protocol:     Cfg.Protocol,
+		LabelDepth:   Cfg.LabelDepth,
+		Rounds:       Cfg.Rounds,
+		BaseURL:      Cfg.BaseURL,
+	}
+
 	start := time.Now()
-	server := readCSV("/home/Til/Downloads/apidownload/data/resolver.csv")
-	// server = server[7000:7050]
-	// server := []string{"9.9.9.9", "1.1.1.1", "8.8.8.8", "46.226.143.86", "34.28.223.99"}
-	// server := []string{"190.181.4.204"}
+	stats.Start = start
+
+	var server []string
+
+	// user can input ether one single ip or a csv file containing multiple
+	// default is the csv file
+	if inputIsResolver {
+		// TODO: check for valid ip address
+		server = []string{inArg}
+	} else {
+		if _, err := os.Stat(inArg); os.IsNotExist(err) {
+			log.Fatalln("File not Found")
+		}
+		server = readCSV(inArg)
+	}
+	stats.NumResolver = len(server)
+
+	// get permission of output directory to pass them down
+	dirStat, err := os.Stat(Cfg.OutputDir)
+	if os.IsNotExist(err) {
+		log.Fatalln("Output directory does not exist")
+	}
+	if err != nil {
+		log.Fatalln("Couldn't access output directory")
+	}
+
+	workingDir := Cfg.OutputDir + start.Local().Format("2006-01-02_15-04")
+	os.Mkdir(workingDir, dirStat.Mode().Perm())
 
 	baseDomain = Cfg.BaseURL
 	randMax = Cfg.RandMax
 
-	fmt.Println("ETA:", time.Duration(Cfg.Rounds*Cfg.RetryTimeout*int(time.Millisecond)).String())
+	fmt.Println("estimated maximum runtime:", time.Duration(Cfg.Rounds*Cfg.RetryTimeout*int(time.Millisecond)).String())
 
 	responses := scanResolvers(server, Cfg.LabelDepth, Cfg.Rounds, Cfg.BatchSize, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
 	results := evalRsults(responses)
-	writeOutputCSV(results, Cfg.OutputDir)
+
+	writeOutputCSV(results, workingDir+"/result.csv")
 	fmt.Println("runtime: ", time.Since(start))
 
+	stats.Fin = time.Now()
+	stats.Runtime = time.Since(start).String()
+
+	data, err := json.MarshalIndent(stats, "", "	")
+	if err != nil {
+		log.Fatalln("couldn't convert stats to json")
+	}
+
+	err = os.WriteFile(workingDir+"/metadata.json", data, dirStat.Mode().Perm())
+	if err != nil {
+		log.Fatalln("Couldn't write Metadata.json file")
+	}
 }

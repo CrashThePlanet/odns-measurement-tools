@@ -19,7 +19,7 @@ type Cfg_db struct {
 	LabelDepth int `yaml:"LabelDepth"`
 	// how many IPs/Resolver to test in one go
 	// depends on available compute power
-	BatchSize int `yaml:"BatchSaize"`
+	BatchSize int `yaml:"BatchSize"`
 	// how often to test each Resolver
 	Rounds int `yaml:"Rounds"`
 	// normal timeout for a DNS request (in ms)
