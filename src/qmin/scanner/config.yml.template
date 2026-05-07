@@ -1,6 +1,6 @@
 BaseURL: <base Domain for requests. Must be served by dns server>
 Port: 53
-Protocol: upd 
+Protocol: udp 
 RandMax: 10000
 LabelDepth: 24
 BatchSize: 10000
