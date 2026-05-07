@@ -244,7 +244,7 @@ func evalRsults(raw map[string][]QueryResult) map[string][3]string {
 		tmp = tmp + `]`
 		out[k] = [3]string{
 			strconv.Itoa(qmin),
-			tmp,
+			fmt.Sprint(tmp),
 			strconv.Itoa(mostFreq.value),
 		}
 	}
