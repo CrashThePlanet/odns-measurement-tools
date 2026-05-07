@@ -232,25 +232,19 @@ func evalRsults(raw map[string][]QueryResult) map[string][3]string {
 				mostFreq = kvPair{seq, counter[seq]}
 			}
 		}
-		/*
-			var tmp = make(map[string]int)
-			for k, v := range counter {
-				tmp[k.Res] = v
-			}*/
 		var tmp = `[`
 		var l = 0
 		for k, v := range counter {
 			l++
 			tmp = tmp + k.Res + `:` + strconv.Itoa(v)
 			if l < len(counter) {
-				tmp = tmp + `,`
+				tmp = tmp + `;`
 			}
 		}
 		tmp = tmp + `]`
 		out[k] = [3]string{
 			strconv.Itoa(qmin),
 			tmp,
-			// fmt.Sprint(tmp),
 			strconv.Itoa(mostFreq.value),
 		}
 	}
