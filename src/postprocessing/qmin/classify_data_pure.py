@@ -98,21 +98,21 @@ def writeClassifiedResolver(resolver, outDir):
             if len(value) <= 1:
                 continue
             with open(outDir / (str(key)+".csv"), 'w') as outfile:
-                write = csv.writer(outfile)
-                write.writerows(value)
+                writer = csv.writer(outfile)
+                writer.writerows(value)
                 outfile.close
 
 if __name__ == '__main__':
 
     if not Path(sys.argv[1]).exists():
         print("File does not exist!")
-        pass
+        sys.exit(1)
     
     outputDir = "./../../data/processed/qmin/"
     if 2 < len(sys.argv):
         if not Path(sys.argv[2]).exists():
             print("Provided output directory does not exist")
-            pass
+            sys.exit(1)
         outputDir = sys.argv[2]
     
     outputDir = Path(outputDir + "classify_" + datetime.now().strftime("%Y-%m-%d_%H-%M"))
