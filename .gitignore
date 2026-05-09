@@ -22,3 +22,6 @@ keys.py
 
 src/data/raw/qmin/*
 !src/data/raw/qmin/.gitkeep
+
+src/data/processed/qmin/*
+!src/data/processed/qmin/.gitkeep
