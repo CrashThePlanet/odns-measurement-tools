@@ -95,10 +95,9 @@ def writeClassifiedResolver(resolver, outDir):
         if isinstance(value, dict):
             writeClassifiedResolver(value, outDir / str(key))
         if isinstance(value, list):
-            if len(value) <= 1:
-                continue
             with open(outDir / (str(key)+".csv"), 'w') as outfile:
                 writer = csv.writer(outfile)
+                writer.writerow(["ip", "qmin", "response"])
                 writer.writerows(value)
                 outfile.close
 

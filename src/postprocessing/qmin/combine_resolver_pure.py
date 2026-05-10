@@ -45,7 +45,7 @@ class ResolverLine:
             # we dont need to if the response was an error as qmin is
             # only evaluated on successful responses
             # if there are none the error stays
-            if key.upper() not in ResponseStatus:
+            if key.upper() not in ResponseStatus.__members__:
                 if "|" in key:
                     if self.qmin is ResolverEval.ERROR:
                         self.qmin = ResolverEval.QMIN
