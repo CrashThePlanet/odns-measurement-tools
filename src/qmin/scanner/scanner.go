@@ -288,8 +288,14 @@ func readCSV(path string) []string {
 	records, _ := reader.ReadAll()
 
 	var ips = []string{}
-	for _, record := range records[1:] {
-		ips = append(ips, record[1])
+	if records[0][1] == "queried_ip" {
+		for _, record := range records[1:] {
+			ips = append(ips, record[1])
+		}
+	} else if records[0][0] == "ip" {
+		for _, record := range records[1:] {
+			ips = append(ips, record[0])
+		}
 	}
 	return ips
 }
