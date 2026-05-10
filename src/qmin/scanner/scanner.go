@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,9 @@ type QMinScanner struct {
 	timeout      time.Duration
 	retryTimeout time.Duration
 }
+
+var responsePattern = `^\d+(?:[.|]\d+)*[.|][^.|]+$`
+var reg = regexp.MustCompile(responsePattern)
 
 func partitionStringSlice(list []string, partitionSize int) [][]string {
 	if len(list) < partitionSize {
@@ -140,7 +144,11 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		return QueryResult{Ip: server, status: 7, Res: "noAnswer"}
 	}
 	if t, ok := res.Answer[0].(*dns.TXT); ok {
-		return QueryResult{Ip: server, status: 0, Res: t.Txt[0]}
+		if reg.MatchString(t.Txt[0]) {
+			return QueryResult{Ip: server, status: 0, Res: t.Txt[0]}
+		} else {
+			return QueryResult{Ip: server, status: -1, Res: "unhandledError"}
+		}
 	}
 	return QueryResult{Ip: server, status: 9, Res: "noTXTResponse"}
 }
@@ -263,6 +271,7 @@ func writeOutputCSV(data map[string][3]string, outPath string) {
 		log.Fatalln("Couldn't create output file: ", err.Error())
 	}
 	writer := csv.NewWriter(file)
+	writer.Write([]string{"ip", "qmin", "response"})
 	err = writer.WriteAll(csvData)
 
 	if err != nil {
