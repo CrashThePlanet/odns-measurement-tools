@@ -18,10 +18,11 @@ type IP struct {
 	Query string
 }
 type probeData struct {
-	tokenLength   int
-	lastSeen      time.Time
-	tokenSequence []string
-	currTokenNum  int
+	tokenLength      int
+	incomingResolver string
+	lastSeen         time.Time
+	tokenSequence    []string
+	currTokenNum     int
 }
 
 type QminDnsServer struct {
@@ -122,19 +123,23 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			fmt.Errorf("Couldn't parse token length: %v", err.Error())
 		}
 		probe = probeData{
-			tokenLength:   int(tokenLen),
-			lastSeen:      time.Now(),
-			tokenSequence: []string{tokenSeq},
-			currTokenNum:  len(tokens),
+			tokenLength:      int(tokenLen),
+			lastSeen:         time.Now(),
+			tokenSequence:    []string{tokenSeq},
+			currTokenNum:     len(tokens),
+			incomingResolver: strings.Split(w.RemoteAddr().String(), ":")[0], // RemoteAddr() contains IP and Port --> remove port
 		}
 	}
 	probes[idToken] = probe
 	probesMutex.Unlock()
 
+	// if this request was the last (determained by the provied death inside the ID label) we return a TXt response containing the pattern an the ip of requesting server
+	// (ip of requested and requesting server can differ -> forwarder)
 	if probe.currTokenNum == probe.tokenLength {
-		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, strings.Join(probe.tokenSequence, "|")))
+		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")))
 		m.Answer = append(m.Answer, rr)
 	} else {
+		// if there are still new reuqests expected we return an A record pointing to this server
 		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN A %s", r.Question[0].Name, s.ip))
 		m.Answer = append(m.Answer, rr)
 

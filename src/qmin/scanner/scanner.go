@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
+	"math"
 	"math/rand"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,9 +37,10 @@ type ScanStat struct {
 }
 
 type QueryResult struct {
-	Ip     string
-	status int // -1: undefined error,  0: no error, 1: refused, 2: Servfail, 3: timeout, 4: NXDomain, 5: No Route to host, 6: no recursion available, 7: no answer from resolver, 8: answer contains no TXT response
-	Res    string
+	resolverIP   string
+	status       int // -1: undefined error,  0: no error, 1: refused, 2: Servfail, 3: timeout, 4: NXDomain, 5: No Route to host, 6: no recursion available, 7: no answer from resolver, 8: answer contains no TXT response
+	Res          string
+	requestingIP string // ip of the Server that actually sent the request to the Server, see "Forwarder"
 }
 
 type QMinScanner struct {
@@ -113,44 +117,48 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 
 	if err != nil {
 		if strings.Contains(err.Error(), "i/o timeout") {
-			return QueryResult{Ip: server, status: 3, Res: "timeout"}
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 3, Res: "timeout"}
 		}
 		if strings.Contains(err.Error(), "connection refused") {
-			return QueryResult{Ip: server, status: 1, Res: "refused"}
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 1, Res: "refused"}
 		}
 		if strings.Contains(err.Error(), "no route to host") {
-			return QueryResult{Ip: server, status: 5, Res: "noRoute"}
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 5, Res: "noRoute"}
 		}
 		fmt.Println("unhandled error: ", err)
-		return QueryResult{Ip: server, status: -1, Res: "unhandledError"}
+		return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 	}
 
 	if res.Rcode != dns.RcodeSuccess {
 		switch res.Rcode {
 		case dns.RcodeServerFailure:
-			return QueryResult{Ip: server, status: 2, Res: "servfail"}
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 2, Res: "servfail"}
 		case dns.RcodeNameError:
-			return QueryResult{Ip: server, status: 4, Res: "nxdomain"}
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 4, Res: "nxdomain"}
 		case dns.RcodeRefused:
-			return QueryResult{Ip: server, status: 1, Res: "refused"}
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 1, Res: "refused"}
 		default:
-			return QueryResult{Ip: server, status: -1, Res: "unhandledError"}
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 		}
 	}
 	if len(res.Answer) == 0 {
 		if !res.RecursionAvailable {
-			return QueryResult{Ip: server, status: 6, Res: "noRecursion"}
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 6, Res: "noRecursion"}
 		}
-		return QueryResult{Ip: server, status: 7, Res: "noAnswer"}
+		return QueryResult{resolverIP: server, requestingIP: "NONE", status: 7, Res: "noAnswer"}
 	}
 	if t, ok := res.Answer[0].(*dns.TXT); ok {
-		if reg.MatchString(t.Txt[0]) {
-			return QueryResult{Ip: server, status: 0, Res: t.Txt[0]}
+		if !strings.Contains(t.Txt[0], ",") {
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+		}
+		split := strings.Split(t.Txt[0], ",")
+		if len(split) > 1 && reg.MatchString(split[1]) {
+			return QueryResult{resolverIP: server, requestingIP: split[0], status: 0, Res: split[1]}
 		} else {
-			return QueryResult{Ip: server, status: -1, Res: "unhandledError"}
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 		}
 	}
-	return QueryResult{Ip: server, status: 9, Res: "noTXTResponse"}
+	return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "noTXTResponse"}
 }
 
 func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
@@ -185,11 +193,11 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 			}()
 
 			for v := range ch {
-				val, ok := out[v.Ip]
+				val, ok := out[v.resolverIP]
 				if ok {
-					out[v.Ip] = append(val, v)
+					out[v.resolverIP] = append(val, v)
 				} else {
-					out[v.Ip] = []QueryResult{v}
+					out[v.resolverIP] = []QueryResult{v}
 				}
 			}
 		}
@@ -202,12 +210,14 @@ type kvPair struct {
 	value int
 }
 
-func evalRsults(raw map[string][]QueryResult) map[string][3]string {
-	var out = make(map[string][3]string)
+func evalRsults(raw map[string][]QueryResult) map[string][4]string {
+	var out = make(map[string][4]string)
 	for k, v := range raw {
 		qmin := -1
-		var counter = make(map[QueryResult]int)
-		mostFreq := kvPair{QueryResult{"", 0, ""}, 0}
+		var counter = make(map[string]int)
+		mostFreq := kvPair{QueryResult{"", 0, "", ""}, 0}
+
+		var requestingIPs = make(map[string]bool)
 
 		for _, seq := range v {
 			if seq.status == 0 {
@@ -231,39 +241,41 @@ func evalRsults(raw map[string][]QueryResult) map[string][3]string {
 				seq.Res += "*idToken*"
 			}
 
-			if val, ok := counter[seq]; ok {
-				counter[seq] = val + 1
+			if val, ok := counter[seq.Res]; ok {
+				counter[seq.Res] = val + 1
 			} else {
-				counter[seq] = 1
+				counter[seq.Res] = 1
 			}
-			if counter[seq] > mostFreq.value {
-				mostFreq = kvPair{seq, counter[seq]}
+			if counter[seq.Res] > mostFreq.value {
+				mostFreq = kvPair{seq, counter[seq.Res]}
 			}
+			requestingIPs[seq.requestingIP] = true
 		}
 		var tmp = `[`
 		var l = 0
 		for k, v := range counter {
 			l++
-			tmp = tmp + k.Res + `:` + strconv.Itoa(v)
+			tmp = tmp + k + `:` + strconv.Itoa(v)
 			if l < len(counter) {
 				tmp = tmp + `;`
 			}
 		}
 		tmp = tmp + `]`
-		out[k] = [3]string{
+		out[k] = [4]string{
 			strconv.Itoa(qmin),
 			fmt.Sprint(tmp),
 			strconv.Itoa(mostFreq.value),
+			strings.Join(slices.Collect(maps.Keys(requestingIPs)), ";"),
 		}
 	}
 	return out
 }
 
-func writeOutputCSV(data map[string][3]string, outPath string) {
+func writeOutputCSV(data map[string][4]string, outPath string) {
 	var csvData = [][]string{}
 
 	for k, v := range data {
-		csvData = append(csvData, []string{k, v[0], v[1]})
+		csvData = append(csvData, []string{k, v[3], v[0], v[1]})
 	}
 
 	file, err := os.Create(outPath)
@@ -271,7 +283,7 @@ func writeOutputCSV(data map[string][3]string, outPath string) {
 		log.Fatalln("Couldn't create output file: ", err.Error())
 	}
 	writer := csv.NewWriter(file)
-	writer.Write([]string{"ip", "qmin", "response"})
+	writer.Write([]string{"resolverIP", "requesingIPs", "qmin", "response"})
 	err = writer.WriteAll(csvData)
 
 	if err != nil {
@@ -292,7 +304,7 @@ func readCSV(path string) []string {
 		for _, record := range records[1:] {
 			ips = append(ips, record[1])
 		}
-	} else if records[0][0] == "ip" {
+	} else if records[0][0] == "resolverIP" {
 		for _, record := range records[1:] {
 			ips = append(ips, record[0])
 		}
@@ -344,7 +356,13 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	baseDomain = Cfg.BaseURL
 	randMax = Cfg.RandMax
 
-	fmt.Println("estimated maximum runtime:", time.Duration(Cfg.Rounds*Cfg.RetryTimeout*int(time.Millisecond)).String())
+	fmt.Println("estimated maximum runtime:", time.Duration(
+		int(
+			math.Ceil(
+				float64(len(server)/Cfg.BatchSize)))*
+			Cfg.Rounds*
+			(Cfg.Timeout+Cfg.RetryTimeout)*
+			int(time.Millisecond)).String())
 
 	responses := scanResolvers(server, Cfg.LabelDepth, Cfg.Rounds, Cfg.BatchSize, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
 	results := evalRsults(responses)

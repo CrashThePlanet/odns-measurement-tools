@@ -303,7 +303,7 @@ func NewQMinScannerCommand() *QMinScannerCommand {
 	sc.fs.BoolVar(&sc.help_flag, "help", false, "Display help")
 	sc.fs.BoolVar(&sc.resolver_flag, "resolver", false, "allows you to pass ONE resolver (ip) instead of file")
 	sc.fs.BoolVar(&sc.resolver_alias, "r", false, "alias for --resolver")
-	sc.fs.StringVar(&sc.config_path, "config", "qmin/scanner/config.yml", "Path to config file")
+	sc.fs.StringVar(&sc.config_path, "config", "./qmin/scanner/config.yml", "Path to config file")
 	sc.fs.StringVar(&sc.config_alias, "c", "", "alais for --conmfig")
 
 	return sc

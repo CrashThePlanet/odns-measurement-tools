@@ -28,6 +28,7 @@ class ResolverLine:
         self.ip:str = ip
         self.qmin:ResolverEval = ResolverEval.ERROR
         self.responses:dict[str, int] = {}
+        self.requestingIPs = set()
 
     def addResponse(self, response):
         # remove leading/trailing brackets and split
@@ -39,6 +40,10 @@ class ResolverLine:
                 self.responses[res[0]] += int(res[1])
             else:
                 self.responses[res[0]] = int(res[1])
+    
+    def addRequestingIP(self, ip):
+        for rIP in ip.split(";"):
+            self.requestingIPs.add(rIP)
     
     def evaluateQMIN(self):
         for key in self.responses.keys():
@@ -68,22 +73,17 @@ class ResolverLine:
 
         return [
             self.ip,
+            ';'.join(self.requestingIPs),
             str(self.qmin.value),
             outStr
         ]
-
-def getCSVinDir(dir):
-    files:[str] = []
-
-
-
 
 if __name__ == '__main__':
     files: [str] = []
 
     outputDir = "./../../data/processed/qmin/"
 
-    # handle prvided output dir
+    # handle provided output dir
     
     if os.path.isfile(sys.argv[1]):
         if len(sys.argv[1:]) <= 1:
@@ -109,14 +109,16 @@ if __name__ == '__main__':
         with open(f, 'r') as file:
             csvfile = csv.DictReader(file)
             for row in csvfile:
-                if row["ip"] not in comb.keys():
-                    comb[row["ip"]] = ResolverLine(row["ip"])
-                comb[row["ip"]].addResponse(row["response"])
+                if row["resolverIP"] not in comb.keys():
+                    comb[row["resolverIP"]] = ResolverLine(row["resolverIP"])
+                comb[row["resolverIP"]].addResponse(row["response"])
+                comb[row["resolverIP"]].addRequestingIP(row["requesingIPs"])
+
             file.close()
 
     with open(outputDir + "/combined_resolver.csv", 'w') as outfile:
                 writer = csv.writer(outfile)
-                writer.writerow(["ip", "qmin", "response"])
+                writer.writerow(["resolverIP", "requestingIPs", "qmin", "response"])
                 for value in comb.values():
                     value.evaluateQMIN()
                     writer.writerow(value.asArray())
