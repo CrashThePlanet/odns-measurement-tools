@@ -60,16 +60,16 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	m.Authoritative = true
 
 	requestedDomain := strings.ToLower(r.Question[0].Name)
-	// some resolver prepend "_." to each request (except the fqdn with all tokens)
-	// it can be removed as this carries no information or significance
-	if requestedDomain[:2] == "_." {
-		requestedDomain = requestedDomain[2:]
-	}
 
 	// check if requested Domain is longer than base domain and ends in the base domain
 	if len(requestedDomain) <= len(s.baseURL) || requestedDomain[len(requestedDomain)-len(s.baseURL):] != s.baseURL {
 		m.SetRcode(r, dns.RcodeNameError)
 		return w, m
+	}
+	// some resolver prepend "_." to each request (except the fqdn with all tokens)
+	// it can be removed as this carries no information or significance
+	if requestedDomain[:2] == "_." {
+		requestedDomain = requestedDomain[2:]
 	}
 
 	tokenSeq := requestedDomain[:len(requestedDomain)-len(s.baseURL)-1]
