@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 from enum import Enum
 from datetime import datetime
+import graphviz
 
 class ResponseStatus(Enum):
     UNHANDLEDERROR = -1
@@ -24,20 +25,26 @@ class ResolverEval(Enum):
     QMIN = 1
     PARTIAL = 2
 
+graph = graphviz.Digraph()
+
 def classify():
     # setup empty dict structure to hold classified data
     result = {key: None for key in ResolverEval}
 
     for key in ResolverEval:
+        graph.edge("root", str(key))
         if key == ResolverEval.ERROR:
             continue
-        
         result[key] = {"allGood": [], "someError": []}
+        graph.edge(str(key), str(key) + "allGood")
+        graph.edge(str(key), str(key) + "someError")
     result[ResolverEval.ERROR] = []
     
+    num_rows = 0
     with open(sys.argv[1], newline='') as file:
         csvfile = csv.DictReader(file)
         for row in csvfile:
+            num_rows += 1
             responses = stringToDict(row['response'])
 
             someError = False
@@ -51,6 +58,7 @@ def classify():
         
         file.close()
         #print(result[ResolverEval.QMIN]["allGood"])
+    graph.node("root", "Resolver\n" + str(num_rows))
     return result
 
 
@@ -88,18 +96,19 @@ def makeDirctory(path):
         print(f"An error occurred while creating output directory: {e}")
         return
 
-def writeClassifiedResolver(resolver, outDir):
+def writeClassifiedResolver(resolver, outDir, parent=None):
     makeDirctory(outDir)
 
     for key, value in resolver.items():
         if isinstance(value, dict):
-            writeClassifiedResolver(value, outDir / str(key))
+            writeClassifiedResolver(value, outDir / str(key), key)
         if isinstance(value, list):
             with open(outDir / (str(key)+".csv"), 'w') as outfile:
                 writer = csv.writer(outfile)
                 writer.writerow(["resolverIP", "requestingIPs", "qmin", "response"])
                 writer.writerows(value)
                 outfile.close
+                graph.node((str(parent) if (parent != None) else "") + str(key), str(key) + "\n" + str(len(value)))
 
 if __name__ == '__main__':
 
@@ -120,5 +129,7 @@ if __name__ == '__main__':
     classifiedResolver = classify()
 
     writeClassifiedResolver(classifiedResolver, outputDir)
+    graph.render(outputDir / "graph", format="svg", cleanup=True)
+
 
     
