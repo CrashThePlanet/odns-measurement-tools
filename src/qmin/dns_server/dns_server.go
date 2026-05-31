@@ -72,7 +72,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		m.SetRcode(r, dns.RcodeNameError)
 		return w, m
 	}
-	fmt.Println(r.Question[0].Qtype)
 
 	tokenSeq := requestedDomain[:len(requestedDomain)-len(s.baseURL)-1]
 	tokens := strings.Split(tokenSeq, ".")
