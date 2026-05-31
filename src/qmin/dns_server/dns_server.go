@@ -72,6 +72,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		m.SetRcode(r, dns.RcodeNameError)
 		return w, m
 	}
+	fmt.Println(r.Question[0].Qtype)
 
 	tokenSeq := requestedDomain[:len(requestedDomain)-len(s.baseURL)-1]
 	tokens := strings.Split(tokenSeq, ".")
@@ -141,7 +142,8 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		m.Answer = append(m.Answer, rr)
 	} else {
 		// if there are still new reuqests expected we return an A record pointing to this server
-		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN A %s", r.Question[0].Name, s.ip))
+		// rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN A %s", r.Question[0].Name, s.ip))
+		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN NS %s", r.Question[0].Name, "ns1.tilhempel.info."))
 		m.Answer = append(m.Answer, rr)
 
 	}
