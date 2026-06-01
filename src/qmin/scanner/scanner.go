@@ -303,10 +303,13 @@ func readCSV(path string) []string {
 		log.Fatalln("Couldn't open CSV file: ", err.Error())
 	}
 	reader := csv.NewReader(file)
+	reader.Comma = ';'
 	records, _ := reader.ReadAll()
 
+	println(records[0][1])
+
 	var ips = []string{}
-	if records[0][1] == "queried_ip" {
+	if records[0][1] == "queried_ip" || records[0][1] == "ip_request" {
 		for _, record := range records[1:] {
 			ips = append(ips, record[1])
 		}
