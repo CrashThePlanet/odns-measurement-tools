@@ -110,6 +110,8 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 	m.SetQuestion(dns.Fqdn(domain), qType)
 	m.RecursionDesired = true
 
+	m.SetEdns0(4096, false)
+
 	c := new(dns.Client)
 	c.Net = Cfg.Protocol
 	c.Timeout = timeout
@@ -125,7 +127,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		if strings.Contains(err.Error(), "no route to host") {
 			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 5, Res: "noRoute"}
 		}
-		fmt.Println("unhandled error: ", err)
+		fmt.Println(server, ": unhandled error: ", err)
 		return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 	}
 
