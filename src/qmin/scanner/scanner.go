@@ -110,7 +110,11 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 	m.SetQuestion(dns.Fqdn(domain), qType)
 	m.RecursionDesired = true
 
-	m.SetEdns0(4096, false)
+	// increase UDP Buffer size
+	// some Resolver send too large packages
+	if Cfg.Protocol == "udp" {
+		m.SetEdns0(4096, false)
+	}
 
 	c := new(dns.Client)
 	c.Net = Cfg.Protocol
