@@ -289,7 +289,7 @@ func writeOutputCSV(data map[string][4]string, outPath string) {
 		log.Fatalln("Couldn't create output file: ", err.Error())
 	}
 	writer := csv.NewWriter(file)
-	writer.Write([]string{"resolverIP", "requesingIPs", "qmin", "response"})
+	writer.Write([]string{"resolverIP", "requestingIPs", "qmin", "response"})
 	err = writer.WriteAll(csvData)
 
 	if err != nil {

@@ -112,7 +112,7 @@ if __name__ == '__main__':
                 if row["resolverIP"] not in comb.keys():
                     comb[row["resolverIP"]] = ResolverLine(row["resolverIP"])
                 comb[row["resolverIP"]].addResponse(row["response"])
-                comb[row["resolverIP"]].addRequestingIP(row["requesingIPs"])
+                comb[row["resolverIP"]].addRequestingIP(row["requestingIPs"])
 
             file.close()
 
