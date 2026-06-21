@@ -3,6 +3,7 @@ package qmin_dnsserver
 import (
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,13 +26,20 @@ type probeData struct {
 	currTokenNum     int
 }
 
+type ResourceRecord struct {
+	name  string
+	qtype string
+	value string
+}
+
 type QminDnsServer struct {
-	baseURL    string
-	addr       string
-	port       int
-	timeout    int
-	sleepCycle int
-	ip         string
+	baseURL          string
+	addr             string
+	port             int
+	timeout          int
+	sleepCycle       int
+	ip               string
+	resource_records map[string]ResourceRecord
 }
 
 var (
@@ -60,6 +68,14 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	m.Authoritative = true
 
 	requestedDomain := strings.ToLower(r.Question[0].Name)
+
+	// catch requests that target predefined records
+	if slices.Contains(slices.Collect(maps.Keys(s.resource_records)), requestedDomain) {
+		record := s.resource_records[requestedDomain]
+		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN %s %s", r.Question[0].Name, record.qtype, record.value))
+		m.Answer = append(m.Answer, rr)
+		return w, m
+	}
 
 	// some resolver prepend "_." to each request (except the fqdn with all tokens)
 	// it can be removed as this carries no information or significance
@@ -167,6 +183,15 @@ func (s *QminDnsServer) Start_server() {
 	s.ip = Cfg.IPAddr
 	s.sleepCycle = Cfg.SleepCycle
 	s.timeout = Cfg.Timeout
+	s.resource_records = make(map[string]ResourceRecord)
+
+	for _, rec := range Cfg.ResourceRecords {
+		s.resource_records[rec["name"]] = ResourceRecord{
+			name:  rec["name"],
+			qtype: rec["qtype"],
+			value: rec["values"],
+		}
+	}
 
 	dns.HandleFunc(".", s.responder)
 	go s.cleanProbes()

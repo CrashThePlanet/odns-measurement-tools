@@ -22,6 +22,8 @@ type Cfg_db struct {
 	Timeout int `yaml:"Timeout"`
 	// how often the cleanup is run (in ms)
 	SleepCycle int `yaml:"SleepCycle"`
+
+	ResourceRecords []map[string]string `yaml:"resource_records"`
 }
 
 var Cfg Cfg_db

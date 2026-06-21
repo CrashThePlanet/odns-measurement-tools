@@ -25,4 +25,5 @@ src/data/raw/qmin/*
 
 src/data/processed/qmin/*
 !src/data/processed/qmin/.gitkeep
-src/notebook/qmin/*html
+src/notebook/qmin/*.html
+src/notebook/qmin/*.png

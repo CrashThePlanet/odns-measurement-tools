@@ -5,3 +5,10 @@ Protocol: udp
 IPAddr: <Public IP>
 Timeout: 5100
 SleepCycle: 10000
+resource_records:
+  - name: ns1.testdomain.com.
+    qtype: NS
+    value: 0.0.0.0
+  - name: ns2.testdomain.com.
+    qtype: NS
+    values: 0.0.0.0
