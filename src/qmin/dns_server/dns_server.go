@@ -191,7 +191,7 @@ func (s *QminDnsServer) Start_server() {
 		s.resource_records[rec["name"]] = ResourceRecord{
 			name:  rec["name"],
 			qtype: rec["qtype"],
-			value: rec["values"],
+			value: rec["value"],
 		}
 	}
 
