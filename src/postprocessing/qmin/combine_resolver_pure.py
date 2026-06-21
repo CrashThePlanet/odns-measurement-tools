@@ -3,6 +3,9 @@ from pathlib import Path
 import sys
 from enum import Enum
 import os
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 class ResponseStatus(Enum):
     UNHANDLEDERROR = -1
@@ -22,6 +25,13 @@ class ResolverEval(Enum):
     QMIN = 1
     PARTIAL = 2
 
+schema = pa.schema([
+    pa.field("resolver_ip", pa.string()),
+    pa.field("status", pa.int16()),
+    pa.field("res", pa.map_(pa.string(), pa.int32())),
+    pa.field("requesting_ip", pa.list_(pa.string()))
+])
+
 
 class ResolverLine:    
     def __init__(self, ip):
@@ -31,18 +41,14 @@ class ResolverLine:
         self.requestingIPs = set()
 
     def addResponse(self, response):
-        # remove leading/trailing brackets and split
-        responses = response[1:-1].split(";")
-
-        for res in responses:
-            res = res.split(":")
-            if res[0] in self.responses:
-                self.responses[res[0]] += int(res[1])
+        for k,v in response:
+            if k in self.responses:
+                self.responses[k] += int(v)
             else:
-                self.responses[res[0]] = int(res[1])
+                self.responses[k] = int(v)
     
     def addRequestingIP(self, ip):
-        for rIP in ip.split(";"):
+        for rIP in ip:
             self.requestingIPs.add(rIP)
     
     def evaluateQMIN(self):
@@ -64,18 +70,12 @@ class ResolverLine:
 
     def asArray(self):
         self.evaluateQMIN()
-        outStr = "["
-        for key, value in self.responses.items():
-            if outStr != "[":
-                outStr += ";"
-            outStr += key + ":" + str(value)
-        outStr += "]"
 
         return [
             self.ip,
-            ';'.join(self.requestingIPs),
-            str(self.qmin.value),
-            outStr
+            self.qmin.value,
+            self.responses,
+            self.requestingIPs
         ]
 
 if __name__ == '__main__':
@@ -93,8 +93,8 @@ if __name__ == '__main__':
             if not Path(path).exists():
                 print(f'Given file does not exist: {path}')
                 sys.exit(1)
-            if not path.endswith(".csv"):
-                printf(f'Given file is not a csv file: {path}')
+            if not path.endswith(".parquet"):
+                print(f'Given file is not a csv file: {path}')
                 sys.exit(1)
             files.append(path)
     elif os.path.isdir(sys.argv[1]):
@@ -106,22 +106,25 @@ if __name__ == '__main__':
     comb:[str, ResolverLine] = {}
 
     for f in files:
-        with open(f, 'r') as file:
-            csvfile = csv.DictReader(file)
-            for row in csvfile:
-                if row["resolverIP"] not in comb.keys():
-                    comb[row["resolverIP"]] = ResolverLine(row["resolverIP"])
-                comb[row["resolverIP"]].addResponse(row["response"])
-                comb[row["resolverIP"]].addRequestingIP(row["requestingIPs"])
+        table = pq.read_table(f)
+        df_table = table.to_pandas()
 
-            file.close()
-
-    with open(outputDir + "/combined_resolver.csv", 'w') as outfile:
-                writer = csv.writer(outfile)
-                writer.writerow(["resolverIP", "requestingIPs", "qmin", "response"])
-                for value in comb.values():
-                    value.evaluateQMIN()
-                    writer.writerow(value.asArray())
-                outfile.close
-
+        for row in df_table.itertuples(index=False):
+            if row.resolver_ip not in comb.keys():
+                comb[row.resolver_ip] = ResolverLine(row.resolver_ip)
+            comb[row.resolver_ip].addResponse(row.res)
+            comb[row.resolver_ip].addRequestingIP(row.requesting_ip)
     
+    out1 = []
+    out2 = []
+    out3 = []
+    out4 = []
+    for value in comb.values():
+        res = value.asArray()
+        out1.append(res[0])
+        out2.append(res[1])
+        out3.append(res[2])
+        out4.append(res[3])
+    
+    table = pa.Table.from_arrays([out1, out2, out3, out4], schema=schema)
+    pq.write_table(table, outputDir + "/combined_resolver.parquet")

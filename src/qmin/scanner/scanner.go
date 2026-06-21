@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/parquet-go/parquet-go"
 )
 
 var baseDomain string
@@ -41,6 +42,13 @@ type QueryResult struct {
 	status       int // -1: undefined error,  0: no error, 1: refused, 2: Servfail, 3: timeout, 4: NXDomain, 5: No Route to host, 6: no recursion available, 7: no answer from resolver, 8: answer contains no TXT response
 	Res          string
 	requestingIP string // ip of the Server that actually sent the request to the Server, see "Forwarder"
+}
+
+type ParqueteQueryResult struct {
+	ResolverIP   string         `parquet:"resolver_ip,dict,zstd"`
+	Status       int            `parquet:"status,delta,zstd"`
+	Res          map[string]int `parquet:"res"`
+	RequestingIP []string       `parquet:"requesting_ip,list,zstd"`
 }
 
 type QMinScanner struct {
@@ -216,8 +224,8 @@ type kvPair struct {
 	value int
 }
 
-func evalRsults(raw map[string][]QueryResult) map[string][4]string {
-	var out = make(map[string][4]string)
+func evalRsults(raw map[string][]QueryResult) []ParqueteQueryResult {
+	var out []ParqueteQueryResult
 	for k, v := range raw {
 		qmin := -1
 		var counter = make(map[string]int)
@@ -255,44 +263,22 @@ func evalRsults(raw map[string][]QueryResult) map[string][4]string {
 			if counter[seq.Res] > mostFreq.value {
 				mostFreq = kvPair{seq, counter[seq.Res]}
 			}
-			requestingIPs[seq.requestingIP] = true
-		}
-		var tmp = `[`
-		var l = 0
-		for k, v := range counter {
-			l++
-			tmp = tmp + k + `:` + strconv.Itoa(v)
-			if l < len(counter) {
-				tmp = tmp + `;`
+			if seq.requestingIP != "NONE" {
+				requestingIPs[seq.requestingIP] = true
 			}
 		}
-		tmp = tmp + `]`
-		out[k] = [4]string{
-			strconv.Itoa(qmin),
-			fmt.Sprint(tmp),
-			strconv.Itoa(mostFreq.value),
-			strings.Join(slices.Collect(maps.Keys(requestingIPs)), ";"),
-		}
+		out = append(out, ParqueteQueryResult{
+			ResolverIP:   k,
+			Status:       qmin,
+			Res:          counter,
+			RequestingIP: slices.Collect(maps.Keys(requestingIPs)),
+		})
 	}
 	return out
 }
 
-func writeOutputCSV(data map[string][4]string, outPath string) {
-	var csvData = [][]string{}
-
-	for k, v := range data {
-		csvData = append(csvData, []string{k, v[3], v[0], v[1]})
-	}
-
-	file, err := os.Create(outPath)
-	if err != nil {
-		log.Fatalln("Couldn't create output file: ", err.Error())
-	}
-	writer := csv.NewWriter(file)
-	writer.Write([]string{"resolverIP", "requestingIPs", "qmin", "response"})
-	err = writer.WriteAll(csvData)
-
-	if err != nil {
+func writeOutputParquet(data []ParqueteQueryResult, outPath string) {
+	if err := parquet.WriteFile(outPath, data); err != nil {
 		log.Fatalln("Couldn't write to Output File: ", err.Error())
 	}
 }
@@ -303,10 +289,7 @@ func readCSV(path string) []string {
 		log.Fatalln("Couldn't open CSV file: ", err.Error())
 	}
 	reader := csv.NewReader(file)
-	reader.Comma = ';'
 	records, _ := reader.ReadAll()
-
-	println(records[0][1])
 
 	var ips = []string{}
 	if records[0][1] == "queried_ip" || records[0][1] == "ip_request" {
@@ -376,7 +359,7 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	responses := scanResolvers(server, Cfg.LabelDepth, Cfg.Rounds, Cfg.BatchSize, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
 	results := evalRsults(responses)
 
-	writeOutputCSV(results, workingDir+"/result.csv")
+	writeOutputParquet(results, workingDir+"/result.parquet")
 	fmt.Println("runtime: ", time.Since(start))
 
 	stats.Fin = time.Now()
