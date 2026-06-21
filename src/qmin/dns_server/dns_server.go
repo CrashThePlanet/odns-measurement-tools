@@ -72,9 +72,11 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	// catch requests that target predefined records
 	if slices.Contains(slices.Collect(maps.Keys(s.resource_records)), requestedDomain) {
 		record := s.resource_records[requestedDomain]
-		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN %s %s", r.Question[0].Name, record.qtype, record.value))
-		m.Answer = append(m.Answer, rr)
-		return w, m
+		if r.Question[0].Qtype == dns.StringToType[record.qtype] {
+			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN %s %s", r.Question[0].Name, record.qtype, record.value))
+			m.Answer = append(m.Answer, rr)
+			return w, m
+		}
 	}
 
 	// some resolver prepend "_." to each request (except the fqdn with all tokens)

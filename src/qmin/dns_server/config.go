@@ -22,7 +22,7 @@ type Cfg_db struct {
 	Timeout int `yaml:"Timeout"`
 	// how often the cleanup is run (in ms)
 	SleepCycle int `yaml:"SleepCycle"`
-
+	// static DNS resource records
 	ResourceRecords []map[string]string `yaml:"resource_records"`
 }
 

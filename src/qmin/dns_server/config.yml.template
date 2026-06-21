@@ -7,8 +7,8 @@ Timeout: 5100
 SleepCycle: 10000
 resource_records:
   - name: ns1.testdomain.com.
-    qtype: NS
+    qtype: A
     value: 0.0.0.0
   - name: ns2.testdomain.com.
-    qtype: NS
+    qtype: A
     values: 0.0.0.0
