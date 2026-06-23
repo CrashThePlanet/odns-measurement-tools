@@ -32,13 +32,13 @@ schema = pa.schema([
     pa.field("requesting_ip", pa.list_(pa.string()))
 ])
 
-
+# represents one tested resolver
 class ResolverLine:    
     def __init__(self, ip):
         self.ip:str = ip
         self.qmin:ResolverEval = ResolverEval.ERROR
         self.responses:dict[str, int] = {}
-        self.requestingIPs = set()
+        self.requestingIPs = set() # those are the IPs of the servers that requested resolution at the name server
 
     def addResponse(self, response):
         for k,v in response:
@@ -51,9 +51,10 @@ class ResolverLine:
         for rIP in ip:
             self.requestingIPs.add(rIP)
     
+    # look up the status of every request from the different files and determine QMIN property
     def evaluateQMIN(self):
         for key in self.responses.keys():
-            # we dont need to if the response was an error as qmin is
+            # we dont need to check if the response was an error as qmin is
             # only evaluated on successful responses
             # if there are none the error stays
             if key.upper() not in ResponseStatus.__members__:
@@ -84,37 +85,48 @@ if __name__ == '__main__':
     outputDir = "./../../data/processed/qmin/"
 
     # handle provided output dir
-    
+    # check if there are more than one file given to combine    
     if os.path.isfile(sys.argv[1]):
         if len(sys.argv[1:]) <= 1:
             print("Please provide more than one file!")
             sys.exit(1)
+        # if so, check fi all the fiels exists and are of the right format
         for path in sys.argv[1:]:
             if not Path(path).exists():
                 print(f'Given file does not exist: {path}')
                 sys.exit(1)
             if not path.endswith(".parquet"):
-                print(f'Given file is not a csv file: {path}')
+                print(f'Given file is not a parquet file: {path}')
                 sys.exit(1)
+            ## if file is fine, add to list
             files.append(path)
+    # if path given is a directory (instead of multiple files), walk through all sub-directories and gather the paths of all
+    # parquet files
     elif os.path.isdir(sys.argv[1]):
-        files = [(r+"/"+f) for r, d, files in os.walk(sys.argv[1]) for f in files if f.endswith('.csv')]
+        files = [(r+"/"+f) for r, d, files in os.walk(sys.argv[1]) for f in files if f.endswith('.parquet')]
     else:
         print("invalid arguments")
         sys.exit(1)
     
+    # temporary holding variable for all resolver
+    # one entry per unique IP
     comb:[str, ResolverLine] = {}
 
     for f in files:
         table = pq.read_table(f)
         df_table = table.to_pandas()
 
+        # walk through all the rows in file, check if resolver IP has been seen before
         for row in df_table.itertuples(index=False):
             if row.resolver_ip not in comb.keys():
+                # create bare resolver line
                 comb[row.resolver_ip] = ResolverLine(row.resolver_ip)
+            # add responses
             comb[row.resolver_ip].addResponse(row.res)
             comb[row.resolver_ip].addRequestingIP(row.requesting_ip)
     
+
+    # write all to parquet file
     out1 = []
     out2 = []
     out3 = []

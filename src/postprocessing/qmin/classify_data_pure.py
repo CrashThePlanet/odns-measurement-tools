@@ -6,6 +6,10 @@ from enum import Enum
 from datetime import datetime
 import graphviz
 
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 class ResponseStatus(Enum):
     UNHANDLEDERROR = -1
     GOOD = 0
@@ -25,64 +29,54 @@ class ResolverEval(Enum):
     QMIN = 1
     PARTIAL = 2
 
+# schema for parquet file(s)
+schema = pa.schema([
+    pa.field("resolver_ip", pa.string()),
+    pa.field("status", pa.int16()),
+    pa.field("res", pa.map_(pa.string(), pa.int32())),
+    pa.field("requesting_ip", pa.list_(pa.string()))
+])
+
+# output graph to show distribution
 graph = graphviz.Digraph()
 
 def classify():
     # setup empty dict structure to hold classified data
     result = {key: None for key in ResolverEval}
 
+    # sub-dicts for each depending if some requests to a resolver failed or if all went through
     for key in ResolverEval:
         graph.edge("root", str(key))
         if key == ResolverEval.ERROR:
             continue
         result[key] = {"allGood": [], "someError": []}
+        # set edges for graph
+        # the nodes will be defined later so they can include the total count
+        # edges can be defined with the nodes existing yet
         graph.edge(str(key), str(key) + "allGood")
         graph.edge(str(key), str(key) + "someError")
     result[ResolverEval.ERROR] = []
-    
-    num_rows = 0
-    with open(sys.argv[1], newline='') as file:
-        csvfile = csv.DictReader(file)
-        for row in csvfile:
-            num_rows += 1
-            responses = stringToDict(row['response'])
 
-            someError = False
-            for key in responses.keys():
-                if key in ResponseStatus:
-                    someError = True
-            if int(row['qmin']) == -1:
-                result[ResolverEval.ERROR].append(row.values())
-            else:
-                result[ResolverEval(int(row['qmin']))]["someError" if someError else "allGood"].append(row.values())
-        
-        file.close()
-        #print(result[ResolverEval.QMIN]["allGood"])
-    graph.node("root", "Resolver\n" + str(num_rows))
+    # read file to be classified
+    table = pq.read_table(sys.argv[1])
+    df_table = table.to_pandas()
+
+    for row in df_table.itertuples(index=False):
+        someError = False
+        # check if at least one of the requests failed
+        for res in row.res:
+            if res[0].upper() in ResponseStatus.__members__:
+                someError = True
+        # add to sub-dicts depending on status and if all requests qere good
+        if int(row.status) == -1:
+            result[ResolverEval.ERROR].append(row)
+        else:
+            result[ResolverEval(int(row.status))]["someError" if someError else "allGood"].append(row)
+    # set root node for output graph with total number of resolver
+    graph.node("root", "Resolver\n" + str(df_table.shape[0]))
     return result
 
-
-def stringToDict(input):
-    input = input[1:-1]
-
-    res = {}
-
-    top = input.split(";")
-    for line in top:
-        resType = line.split(":")
-
-        if "*idToken*" in resType[0]:
-            res[resType[0]] = int(resType[1])
-        else:
-            # some resolver return blocked in form of a TXt message
-            # now skip
-            # TODO: handle
-            try:
-                res[ResponseStatus[resType[0].upper()]] = int(resType[1])
-            except:
-                res[ResponseStatus.UNHANDLEDERROR] = 1
-    return res
-
+# simply create and directory of catch fail
 def makeDirctory(path):
     try:
         path.mkdir()
@@ -96,36 +90,47 @@ def makeDirctory(path):
         print(f"An error occurred while creating output directory: {e}")
         return
 
+# write the classifcation to a directory
+# structure follows the the graph (or vise-versa)
+# recursive function
 def writeClassifiedResolver(resolver, outDir, parent=None):
     makeDirctory(outDir)
 
     for key, value in resolver.items():
+        # value of type dict means, that this is and directory
+        # therefore make directory and giv contents to recursion
         if isinstance(value, dict):
             writeClassifiedResolver(value, outDir / str(key), key)
+        # value of type list means it is a file
+        # therefore create Dataframe from list of resolver scans and write to parquet file in given directory
         if isinstance(value, list):
-            with open(outDir / (str(key)+".csv"), 'w') as outfile:
-                writer = csv.writer(outfile)
-                writer.writerow(["resolverIP", "requestingIPs", "qmin", "response"])
-                writer.writerows(value)
-                outfile.close
-                graph.node((str(parent) if (parent != None) else "") + str(key), str(key) + "\n" + str(len(value)))
+            df = pd.DataFrame(value, columns=["resolver_ip", "status", "res", "requesting_ip"])
+            df.to_parquet(outDir / (str(key)+".parquet"), schema=schema)
+            # define node for graph with resolver count
+            # the internal name of the node includes the name of the parent to differntiate between e.g. the "allGood" of QMIN resolver
+            # and the "allGood" node of the NOQMIN resolver
+            graph.node((str(parent) if (parent != None) else "") + str(key), str(key) + "\n" + str(len(value)))
 
 if __name__ == '__main__':
-
     if not Path(sys.argv[1]).exists():
         print("File does not exist!")
         sys.exit(1)
     
+    #default output directory
+    # going fro mthe roor of the project it should by odns-measurement-tools/src/data/processed/qmin
     outputDir = "./../../data/processed/qmin/"
+    # if there is a third argument, check if directory exitsts
     if 2 < len(sys.argv):
         if not Path(sys.argv[2]).exists():
             print("Provided output directory does not exist")
             sys.exit(1)
         outputDir = sys.argv[2]
     
+    # create output path for this classification run
+    # structure is: "classify_*YEAR*-*MONTH*-*DAY*_*HOUR*-*MINUTES*"
     outputDir = Path(outputDir + "classify_" + datetime.now().strftime("%Y-%m-%d_%H-%M"))
 
-
+    # run classification, write for folder structure and render graph
     classifiedResolver = classify()
 
     writeClassifiedResolver(classifiedResolver, outputDir)
