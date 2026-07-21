@@ -96,7 +96,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	idToken := tokens[len(tokens)-1]
 
 	// TODO: check for valid id token
-	if len(idToken) < 20 {
+	if len(idToken) < 10 {
 		m.SetRcode(r, dns.RcodeRefused)
 		return w, m
 	}
