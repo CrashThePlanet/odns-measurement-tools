@@ -96,7 +96,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	idToken := tokens[len(tokens)-1]
 
 	// TODO: check for valid id token
-	if len(idToken) < 10 {
+	if len(idToken) < 20 {
 		m.SetRcode(r, dns.RcodeRefused)
 		return w, m
 	}
@@ -136,8 +136,9 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		// Label to identify the probe run:
 		// XXXXXXXX | XX | XXXX... (pipes just for visualisation)
 		// IPv4 of Resolver (Hex) | max token depth (int) | randomized numbers to circumvent caches (length loosly dependent on number of runs per resolver)
+		probeMetaData := strings.Split(idToken, "-")
 
-		tokenLen, err := strconv.ParseInt(idToken[8:10], 10, 64)
+		tokenLen, err := strconv.ParseInt(probeMetaData[1], 10, 64)
 		if err != nil {
 			fmt.Errorf("Couldn't parse token length: %v", err.Error())
 		}

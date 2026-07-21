@@ -97,10 +97,10 @@ func domainAssembly(dnsServer string, tokenDepth int) string {
 		if ocInt < 16 {
 			idToken += "0"
 		}
-		idToken += strconv.FormatInt(int64(ocInt), 16)
+		idToken += strconv.FormatInt(int64(ocInt), 16) + "-"
 	}
 
-	idToken += strconv.Itoa(tokenDepth)
+	idToken += strconv.Itoa(tokenDepth) + "-"
 	idToken += strconv.Itoa(rand.Intn(randMax))
 
 	var domain = ""
