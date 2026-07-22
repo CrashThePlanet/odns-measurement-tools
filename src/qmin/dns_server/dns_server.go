@@ -140,7 +140,13 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	} else if p, ok := probes[idToken+"-induction"]; ok {
 		inductionDomain := strings.Join(p.inductionProbe.tokenSequence, ".")
 		if len(inductionDomain) < len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) {
-			newSeq := tokenSeq[:len(tokenSeq)-len(inductionDomain)-1]
+			fmt.Println(inductionDomain, tokenSeq)
+			var newSeq string
+			if len(inductionDomain) == 0 {
+				newSeq = tokenSeq
+			} else {
+				newSeq = tokenSeq[:len(tokenSeq)-len(inductionDomain)-1]
+			}
 
 			p.inductionProbe.currTokenNum = len(tokens)
 			s := append([]string(nil), p.inductionProbe.tokenSequence...)
@@ -149,6 +155,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		}
 		p.lastSeen = time.Now()
 		probe = p
+		idToken += "-induction"
 	} else {
 		// first time this domain is requested
 		// create entry in probes map
@@ -179,8 +186,9 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// if this request was the last (determained by the provied death inside the ID label) we return a TXt response containing the pattern an the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
+	fmt.Println(probe.induction, probe.inductionProbe)
+	fmt.Println(probe.tokenLength)
 	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength {
-		fmt.Println("lelele")
 		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
 		m.Answer = append(m.Answer, rr)
 	} else if probe.currTokenNum == probe.tokenLength {
@@ -196,7 +204,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 			m.Answer = append(m.Answer, rr)
 		} else {
-			fmt.Println("674567ue5")
 			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")))
 			m.Answer = append(m.Answer, rr)
 		}
