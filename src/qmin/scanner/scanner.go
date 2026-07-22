@@ -50,6 +50,8 @@ type ParqueteQueryResult struct {
 	Status       int            `parquet:"status,delta,zstd"`
 	Res          map[string]int `parquet:"res"`
 	RequestingIP []string       `parquet:"requesting_ip,list,zstd"`
+	InducedQMIN  int            `parquet:"induced_qmin,delta,zstd"`
+	InducedRes   map[string]int `parquet:"induced_res"`
 }
 
 type QMinScanner struct {
@@ -162,7 +164,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		}
 		return QueryResult{resolverIP: server, requestingIP: "NONE", status: 7, Res: "noAnswer"}
 	}
-	if t, ok := res.Answer[0].(*dns.TXT); ok {
+	if t, ok := res.Answer[1].(*dns.TXT); ok {
 		if !strings.Contains(t.Txt[0], ",") {
 			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 		}
@@ -229,12 +231,14 @@ func evalRsults(raw map[string][]QueryResult) []ParqueteQueryResult {
 	var out []ParqueteQueryResult
 	for k, v := range raw {
 		qmin := -1
+		inducedQMIN := -1
 		var counter = make(map[string]int)
-		mostFreq := kvPair{QueryResult{"", 0, "", "", ""}, 0}
+		var inducedCounter = make(map[string]int)
 
 		var requestingIPs = make(map[string]bool)
 
 		for _, seq := range v {
+			// checking all main patterns
 			if seq.status == 0 {
 				if strings.Contains(seq.Res, "|") {
 					switch qmin {
@@ -255,15 +259,40 @@ func evalRsults(raw map[string][]QueryResult) []ParqueteQueryResult {
 				}
 				seq.Res += "*idToken*"
 			}
+			// checking all induced patterns
+			if len(seq.inductionPattern) > 0 {
+				if strings.Contains(seq.inductionPattern, "|") {
+					switch inducedQMIN {
+					case 0:
+						inducedQMIN = 2
+					case -1:
+						inducedQMIN = 1
+					}
+				} else {
+					switch inducedQMIN {
+					case 1:
+						inducedQMIN = 2
+					case -1:
+						inducedQMIN = 0
+					}
+				}
+				lastIndex := max(strings.LastIndex(seq.Res, "|"), strings.LastIndex(seq.Res, "."))
+				seq.inductionPattern = seq.inductionPattern[:lastIndex+1] + "*idToken*"
+			}
 
+			// counting all the different patterns
 			if val, ok := counter[seq.Res]; ok {
 				counter[seq.Res] = val + 1
 			} else {
 				counter[seq.Res] = 1
 			}
-			if counter[seq.Res] > mostFreq.value {
-				mostFreq = kvPair{seq, counter[seq.Res]}
+			// counting all different induced patterns
+			if val, ok := inducedCounter[seq.inductionPattern]; ok {
+				inducedCounter[seq.inductionPattern] = val + 1
+			} else {
+				inducedCounter[seq.inductionPattern] = 1
 			}
+
 			if seq.requestingIP != "NONE" {
 				requestingIPs[seq.requestingIP] = true
 			}
@@ -273,6 +302,8 @@ func evalRsults(raw map[string][]QueryResult) []ParqueteQueryResult {
 			Status:       qmin,
 			Res:          counter,
 			RequestingIP: slices.Collect(maps.Keys(requestingIPs)),
+			InducedQMIN:  inducedQMIN,
+			InducedRes:   inducedCounter,
 		})
 	}
 	return out
