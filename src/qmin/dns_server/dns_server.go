@@ -24,6 +24,13 @@ type probeData struct {
 	lastSeen         time.Time
 	tokenSequence    []string
 	currTokenNum     int
+	induction        bool
+	inductionProbe   inducedProbe
+}
+
+type inducedProbe struct {
+	tokenSequence []string
+	currTokenNum  int
 }
 
 type ResourceRecord struct {
@@ -100,6 +107,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		m.SetRcode(r, dns.RcodeRefused)
 		return w, m
 	}
+	probeMetaData := strings.Split(idToken, "-")
 
 	probesMutex.Lock()
 	probe, ok := probes[idToken]
@@ -129,6 +137,18 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 		}
 		probe.lastSeen = time.Now()
+	} else if p, ok := probes[idToken+"-induction"]; ok {
+		inductionDomain := strings.Join(p.inductionProbe.tokenSequence, ".")
+		if len(inductionDomain) < len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) {
+			newSeq := tokenSeq[:len(tokenSeq)-len(inductionDomain)-1]
+
+			p.inductionProbe.currTokenNum = len(tokens)
+			s := append([]string(nil), p.inductionProbe.tokenSequence...)
+			s = slices.Insert(s, 0, newSeq)
+			p.inductionProbe.tokenSequence = s
+		}
+		p.lastSeen = time.Now()
+		probe = p
 	} else {
 		// first time this domain is requested
 		// create entry in probes map
@@ -136,7 +156,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		// Label to identify the probe run:
 		// XXXXXXXX | XX | XXXX... (pipes just for visualisation)
 		// IPv4 of Resolver (Hex) | max token depth (int) | randomized numbers to circumvent caches (length loosly dependent on number of runs per resolver)
-		probeMetaData := strings.Split(idToken, "-")
 
 		tokenLen, err := strconv.ParseInt(probeMetaData[1], 10, 64)
 		if err != nil {
@@ -148,6 +167,11 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			tokenSequence:    []string{tokenSeq},
 			currTokenNum:     len(tokens),
 			incomingResolver: strings.Split(w.RemoteAddr().String(), ":")[0], // RemoteAddr() contains IP and Port --> remove port
+			induction:        len(probeMetaData) > 3 && probeMetaData[3] == "induction",
+			inductionProbe: inducedProbe{
+				tokenSequence: []string{},
+				currTokenNum:  0,
+			},
 		}
 	}
 	probes[idToken] = probe
@@ -155,9 +179,27 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// if this request was the last (determained by the provied death inside the ID label) we return a TXt response containing the pattern an the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
-	if probe.currTokenNum == probe.tokenLength {
-		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")))
+	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength {
+		fmt.Println("lelele")
+		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
 		m.Answer = append(m.Answer, rr)
+	} else if probe.currTokenNum == probe.tokenLength {
+		if len(probeMetaData) > 3 && probeMetaData[3] == "induction" {
+			rr := new(dns.CNAME)
+			rr.Hdr = dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 3600}
+
+			var domain string
+			for i := probe.tokenLength - 1; i > 0; i-- {
+				domain += strconv.Itoa(i) + "."
+			}
+			rr.Target = domain + strings.Join(probeMetaData[:3], "-") + "." + s.baseURL
+
+			m.Answer = append(m.Answer, rr)
+		} else {
+			fmt.Println("674567ue5")
+			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")))
+			m.Answer = append(m.Answer, rr)
+		}
 	} else {
 		// if there are still new reuqests expected we return an A record pointing to this server
 		// rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN A %s", r.Question[0].Name, s.ip))

@@ -38,10 +38,11 @@ type ScanStat struct {
 }
 
 type QueryResult struct {
-	resolverIP   string
-	status       int // -1: undefined error,  0: no error, 1: refused, 2: Servfail, 3: timeout, 4: NXDomain, 5: No Route to host, 6: no recursion available, 7: no answer from resolver, 8: answer contains no TXT response
-	Res          string
-	requestingIP string // ip of the Server that actually sent the request to the Server, see "Forwarder"
+	resolverIP       string
+	status           int // -1: undefined error,  0: no error, 1: refused, 2: Servfail, 3: timeout, 4: NXDomain, 5: No Route to host, 6: no recursion available, 7: no answer from resolver, 8: answer contains no TXT response
+	Res              string
+	requestingIP     string // ip of the Server that actually sent the request to the Server, see "Forwarder"
+	inductionPattern string
 }
 
 type ParqueteQueryResult struct {
@@ -109,7 +110,7 @@ func domainAssembly(dnsServer string, tokenDepth int) string {
 		domain += strconv.Itoa(i) + "."
 	}
 
-	domain += idToken + "." + baseDomain
+	domain += idToken + "-induction" + "." + baseDomain
 	return domain
 }
 
@@ -167,7 +168,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		}
 		split := strings.Split(t.Txt[0], ",")
 		if len(split) > 1 && reg.MatchString(split[1]) {
-			return QueryResult{resolverIP: server, requestingIP: split[0], status: 0, Res: split[1]}
+			return QueryResult{resolverIP: server, requestingIP: split[0], status: 0, Res: split[1], inductionPattern: split[2]}
 		} else {
 			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 		}
@@ -229,7 +230,7 @@ func evalRsults(raw map[string][]QueryResult) []ParqueteQueryResult {
 	for k, v := range raw {
 		qmin := -1
 		var counter = make(map[string]int)
-		mostFreq := kvPair{QueryResult{"", 0, "", ""}, 0}
+		mostFreq := kvPair{QueryResult{"", 0, "", "", ""}, 0}
 
 		var requestingIPs = make(map[string]bool)
 
