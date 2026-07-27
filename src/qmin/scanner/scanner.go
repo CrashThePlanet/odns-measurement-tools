@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"maps"
 	"math"
 	"math/rand"
 	"os"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,20 +36,24 @@ type ScanStat struct {
 }
 
 type QueryResult struct {
-	resolverIP       string
-	status           int // -1: undefined error,  0: no error, 1: refused, 2: Servfail, 3: timeout, 4: NXDomain, 5: No Route to host, 6: no recursion available, 7: no answer from resolver, 8: answer contains no TXT response
-	Res              string
-	requestingIP     string // ip of the Server that actually sent the request to the Server, see "Forwarder"
-	inductionPattern string
+	resolverIP         string
+	status             int // -1: undefined error,  0: no error, 1: refused, 2: Servfail, 3: timeout, 4: NXDomain, 5: No Route to host, 6: no recursion available, 7: no answer from resolver, 8: answer contains no TXT response
+	Res                string
+	requestingIP       string // ip of the Server that actually sent the request to the Server, see "Forwarder"
+	induction          bool
+	inductionPattern   string
+	inductionRequester string
+	nxBehaviour        bool
 }
 
-type ParqueteQueryResult struct {
-	ResolverIP   string         `parquet:"resolver_ip,dict,zstd"`
-	Status       int            `parquet:"status,delta,zstd"`
-	Res          map[string]int `parquet:"res"`
-	RequestingIP []string       `parquet:"requesting_ip,list,zstd"`
-	InducedQMIN  int            `parquet:"induced_qmin,delta,zstd"`
-	InducedRes   map[string]int `parquet:"induced_res"`
+type ParquetQueryResult struct {
+	ResolverIP   string `parquet:"resolver_ip,dict,zstd"`
+	RequestingIP string `parquet:"requesting_ip,dict,zstd"`
+	Response     string `parquet:"response,dict,zstd"`
+	InductionIP  string `parquet:"ind_requesting_ip,dict,zstd"`
+	InducedRes   string `parquet:"induced_res,dict,zstd"`
+	InducedQMIN  bool   `parquet:"induced_qmin"`
+	ModeCheck    bool   `parquet:"qmin_mode_check"`
 }
 
 type QMinScanner struct {
@@ -84,10 +86,13 @@ func partitionStringSlice(list []string, partitionSize int) [][]string {
 	return partitions
 }
 
-func domainAssembly(dnsServer string, tokenDepth int) string {
+func domainAssembly(dnsServer string, tokenDepth int, induction bool, nxtest bool) string {
 	octets := strings.Split(dnsServer, ".")
 	if len(octets) != 4 {
 		log.Fatalln("Please provide an correct IPv4 Adress: ", dnsServer)
+	}
+	if induction && nxtest {
+		log.Fatalln("Only test for induced queries OR NX behaviour in one query!")
 	}
 
 	var idToken = ""
@@ -111,9 +116,15 @@ func domainAssembly(dnsServer string, tokenDepth int) string {
 	for i := tokenDepth - 1; i > 0; i-- {
 		domain += strconv.Itoa(i) + "."
 	}
+	domain += idToken
 
-	domain += idToken + "-induction" + "." + baseDomain
-	return domain
+	if induction {
+		domain += "-induction" + "."
+	}
+	if nxtest {
+		domain += "-nx" + "."
+	}
+	return domain + baseDomain
 }
 
 func dnsQuery(domain string, server string, qType uint16, timeout time.Duration) QueryResult {
@@ -164,27 +175,31 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		}
 		return QueryResult{resolverIP: server, requestingIP: "NONE", status: 7, Res: "noAnswer"}
 	}
-	if t, ok := res.Answer[1].(*dns.TXT); ok {
-		if !strings.Contains(t.Txt[0], ",") {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
-		}
-		split := strings.Split(t.Txt[0], ",")
-		if len(split) > 1 && reg.MatchString(split[1]) {
-			return QueryResult{resolverIP: server, requestingIP: split[0], status: 0, Res: split[1], inductionPattern: split[2]}
-		} else {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+	for _, a := range res.Answer {
+		if t, ok := a.(*dns.TXT); ok {
+			if !strings.Contains(t.Txt[0], ",") {
+				return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+			}
+			split := strings.Split(t.Txt[0], ",")
+			if len(split) > 1 && reg.MatchString(split[1]) {
+				return QueryResult{resolverIP: server, requestingIP: split[0], status: 0, Res: split[1], inductionRequester: split[2], inductionPattern: split[3]}
+			} else {
+				return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+			}
 		}
 	}
 	return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "noTXTResponse"}
 }
 
-func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
+func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, nxtest bool) {
 	defer wg.Done()
-	requestedDomain := domainAssembly(server, tokenDepth)
+	requestedDomain := domainAssembly(server, tokenDepth, induction, nxtest)
 	res := dnsQuery(requestedDomain, server, qType, timeout)
 	if res.status == 3 {
 		res = dnsQuery(requestedDomain, server, qType, retryTimeout)
 	}
+	res.nxBehaviour = nxtest
+	res.induction = induction
 	ch <- res
 }
 
@@ -202,7 +217,9 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 
 			for _, ip := range part {
 				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)
+				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
+				wg.Add(1)
+				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
 			}
 			go func() {
 				wg.Wait()
@@ -222,95 +239,22 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 	return out
 }
 
-type kvPair struct {
-	Key   QueryResult
-	value int
-}
-
-func evalRsults(raw map[string][]QueryResult) []ParqueteQueryResult {
-	var out []ParqueteQueryResult
-	for k, v := range raw {
-		qmin := -1
-		inducedQMIN := -1
-		var counter = make(map[string]int)
-		var inducedCounter = make(map[string]int)
-
-		var requestingIPs = make(map[string]bool)
-
-		for _, seq := range v {
-			// checking all main patterns
-			if seq.status == 0 {
-				if strings.Contains(seq.Res, "|") {
-					switch qmin {
-					case 0:
-						qmin = 2
-					case -1:
-						qmin = 1
-					}
-					seq.Res = seq.Res[:strings.LastIndex(seq.Res, "|")+1]
-				} else if strings.Contains(seq.Res, ".") {
-					switch qmin {
-					case 1:
-						qmin = 2
-					case -1:
-						qmin = 0
-					}
-					seq.Res = seq.Res[:strings.LastIndex(seq.Res, ".")+1]
-				}
-				seq.Res += "*idToken*"
-			}
-			// checking all induced patterns
-			if len(seq.inductionPattern) > 0 {
-				if strings.Contains(seq.inductionPattern, "|") {
-					switch inducedQMIN {
-					case 0:
-						inducedQMIN = 2
-					case -1:
-						inducedQMIN = 1
-					}
-				} else {
-					switch inducedQMIN {
-					case 1:
-						inducedQMIN = 2
-					case -1:
-						inducedQMIN = 0
-					}
-				}
-				lastIndex := max(strings.LastIndex(seq.Res, "|"), strings.LastIndex(seq.Res, "."))
-				seq.inductionPattern = seq.inductionPattern[:lastIndex+1] + "*idToken*"
-			}
-
-			// counting all the different patterns
-			if val, ok := counter[seq.Res]; ok {
-				counter[seq.Res] = val + 1
-			} else {
-				counter[seq.Res] = 1
-			}
-			// counting all different induced patterns
-			if val, ok := inducedCounter[seq.inductionPattern]; ok {
-				inducedCounter[seq.inductionPattern] = val + 1
-			} else {
-				inducedCounter[seq.inductionPattern] = 1
-			}
-
-			if seq.requestingIP != "NONE" {
-				requestingIPs[seq.requestingIP] = true
-			}
+func writeOutputParquet(data map[string][]QueryResult, outPath string) {
+	fileData := []ParquetQueryResult{}
+	for k, v := range data {
+		for _, q := range v {
+			fileData = append(fileData, ParquetQueryResult{
+				ResolverIP:   k,
+				RequestingIP: q.requestingIP,
+				Response:     q.Res,
+				InducedQMIN:  q.induction,
+				InducedRes:   q.inductionPattern,
+				InductionIP:  q.inductionRequester,
+				ModeCheck:    q.nxBehaviour,
+			})
 		}
-		out = append(out, ParqueteQueryResult{
-			ResolverIP:   k,
-			Status:       qmin,
-			Res:          counter,
-			RequestingIP: slices.Collect(maps.Keys(requestingIPs)),
-			InducedQMIN:  inducedQMIN,
-			InducedRes:   inducedCounter,
-		})
 	}
-	return out
-}
-
-func writeOutputParquet(data []ParqueteQueryResult, outPath string) {
-	if err := parquet.WriteFile(outPath, data); err != nil {
+	if err := parquet.WriteFile(outPath, fileData); err != nil {
 		log.Fatalln("Couldn't write to Output File: ", err.Error())
 	}
 }
@@ -389,9 +333,9 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 			int(time.Millisecond)).String())
 
 	responses := scanResolvers(server, Cfg.LabelDepth, Cfg.Rounds, Cfg.BatchSize, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
-	results := evalRsults(responses)
+	// results := evalRsults(responses)
 
-	writeOutputParquet(results, workingDir+"/result.parquet")
+	writeOutputParquet(responses, workingDir+"/result.parquet")
 	fmt.Println("runtime: ", time.Since(start))
 
 	stats.Fin = time.Now()
