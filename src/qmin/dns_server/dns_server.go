@@ -207,7 +207,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			m.Answer = append(m.Answer, rr)
 		}
 	} else {
-		if probeMetaData[3] == "nx" {
+		if len(probeMetaData) > 3 && probeMetaData[3] == "nx" {
 			m.SetRcode(r, dns.RcodeNameError)
 			return w, m
 		} else {
