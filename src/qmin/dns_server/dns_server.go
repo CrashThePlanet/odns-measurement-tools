@@ -31,6 +31,7 @@ type probeData struct {
 type inducedProbe struct {
 	tokenSequence []string
 	currTokenNum  int
+	resolver      string
 }
 
 type ResourceRecord struct {
@@ -150,6 +151,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			p.inductionProbe.currTokenNum = len(tokens)
 			s := append([]string(nil), p.inductionProbe.tokenSequence...)
 			s = slices.Insert(s, 0, newSeq)
+			p.inductionProbe.resolver = strings.Split(w.RemoteAddr().String(), ":")[0]
 			p.inductionProbe.tokenSequence = s
 		}
 		p.lastSeen = time.Now()
@@ -186,7 +188,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	// if this request was the last (determained by the provied death inside the ID label) we return a TXt response containing the pattern an the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
 	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength {
-		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
+		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+probe.inductionProbe.resolver+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
 		m.Answer = append(m.Answer, rr)
 	} else if probe.currTokenNum == probe.tokenLength {
 		if len(probeMetaData) > 3 && probeMetaData[3] == "induction" {
