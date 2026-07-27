@@ -203,7 +203,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 			m.Answer = append(m.Answer, rr)
 		} else {
-			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")))
+			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+",NULL,NULL"))
 			m.Answer = append(m.Answer, rr)
 		}
 	} else {
