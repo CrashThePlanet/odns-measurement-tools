@@ -1,9 +1,12 @@
 package qmin_scanner
 
 import (
+	"bufio"
 	"encoding/csv"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"math/rand"
@@ -195,6 +198,7 @@ func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retry
 	defer wg.Done()
 	requestedDomain := domainAssembly(server, tokenDepth, induction, nxtest)
 	res := dnsQuery(requestedDomain, server, qType, timeout)
+	// if timeout retry wiht longer timeout
 	if res.status == 3 {
 		res = dnsQuery(requestedDomain, server, qType, retryTimeout)
 	}
@@ -203,10 +207,14 @@ func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retry
 	ch <- res
 }
 
-func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int, timeout time.Duration, retryTrimeout time.Duration) map[string][]QueryResult {
-	var out = make(map[string][]QueryResult)
+func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int, timeout time.Duration, retryTrimeout time.Duration) *TempStore {
 
 	parts := partitionStringSlice(resolver, batchSize)
+
+	tempDataFile, err := NewTempStore()
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	for i, part := range parts {
 		fmt.Println("part", i+1, "/", len(parts))
@@ -227,35 +235,87 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 			}()
 
 			for v := range ch {
-				val, ok := out[v.resolverIP]
-				if ok {
-					out[v.resolverIP] = append(val, v)
-				} else {
-					out[v.resolverIP] = []QueryResult{v}
+				resLine := ParquetQueryResult{
+					ResolverIP:   v.resolverIP,
+					RequestingIP: v.requestingIP,
+					Response:     v.Res,
+					InducedQMIN:  v.induction,
+					InducedRes:   v.inductionPattern,
+					InductionIP:  v.inductionRequester,
+					ModeCheck:    v.nxBehaviour,
 				}
+				tempDataFile.WriteSingle(resLine)
 			}
 		}
 	}
-	return out
+
+	if err := tempDataFile.Close(); err != nil {
+		log.Fatalln(err)
+	}
+
+	return tempDataFile
 }
 
-func writeOutputParquet(data map[string][]QueryResult, outPath string) {
-	fileData := []ParquetQueryResult{}
-	for k, v := range data {
-		for _, q := range v {
-			fileData = append(fileData, ParquetQueryResult{
-				ResolverIP:   k,
-				RequestingIP: q.requestingIP,
-				Response:     q.Res,
-				InducedQMIN:  q.induction,
-				InducedRes:   q.inductionPattern,
-				InductionIP:  q.inductionRequester,
-				ModeCheck:    q.nxBehaviour,
-			})
+func writeOutputParquet(tempPath string, outPath string) {
+	tempFile, err := os.Open(tempPath)
+	if err != nil {
+		log.Fatalln("Could not read temporary file: {}", err.Error())
+	}
+
+	defer tempFile.Close()
+
+	bufReader := bufio.NewReaderSize(tempFile, 1<<20)
+	dec := gob.NewDecoder(bufReader)
+
+	outFile, err := os.Create(outPath)
+	if err != nil {
+		log.Fatalln("could not create parquet output file: {}", err.Error())
+	}
+
+	defer func() {
+		if closeErr := outFile.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+
+	writer := parquet.NewGenericWriter[ParquetQueryResult](outFile)
+	defer func() {
+		if closeErr := writer.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+
+	buf := make([]ParquetQueryResult, 0, Cfg.BatchSize)
+	flush := func() error {
+		if len(buf) == 0 {
+			return nil
+		}
+
+		if _, writeErr := writer.Write(buf); writeErr != nil {
+			return fmt.Errorf("could not write row to parquet file: {}", writeErr.Error())
+		}
+		buf = buf[:0]
+		return nil
+	}
+
+	for {
+		var record ParquetQueryResult
+		decodeErr := dec.Decode(&record)
+		if decodeErr != nil {
+			if decodeErr == io.EOF {
+				break
+			}
+			log.Fatalln("could not decode row: {}", decodeErr.Error())
+		}
+		buf = append(buf, record)
+		if len(buf) >= Cfg.BatchSize {
+			if flushErr := flush(); flushErr != nil {
+				log.Fatalln("could not flush batch to file: {}", err.Error())
+			}
 		}
 	}
-	if err := parquet.WriteFile(outPath, fileData); err != nil {
-		log.Fatalln("Couldn't write to Output File: ", err.Error())
+	if flushErr := flush(); flushErr != nil {
+		log.Fatalln("could not flush batch to file: {}", err.Error())
 	}
 }
 
@@ -332,10 +392,14 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 			(Cfg.Timeout+Cfg.RetryTimeout)*
 			int(time.Millisecond)).String())
 
-	responses := scanResolvers(server, Cfg.LabelDepth, Cfg.Rounds, Cfg.BatchSize, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
+	tempFile := scanResolvers(server, Cfg.LabelDepth, Cfg.Rounds, Cfg.BatchSize, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
+
+	defer tempFile.Delete()
+
+	writeOutputParquet(tempFile.Path(), workingDir+"/result.parquet")
 	// results := evalRsults(responses)
 
-	writeOutputParquet(responses, workingDir+"/result.parquet")
+	// writeOutputParquet(responses, workingDir+"/result.parquet")
 	fmt.Println("runtime: ", time.Since(start))
 
 	stats.Fin = time.Now()
