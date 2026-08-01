@@ -186,7 +186,6 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 	for _, a := range res.Answer {
 		if t, ok := a.(*dns.TXT); ok {
 			if !strings.Contains(t.Txt[0], ",") {
-				fmt.Println(t.Txt[0])
 				return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 			}
 			split := strings.Split(t.Txt[0], ",")
