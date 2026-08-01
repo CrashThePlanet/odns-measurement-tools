@@ -185,11 +185,20 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	probes[idToken] = probe
 	probesMutex.Unlock()
 
-	// if this request was the last (determained by the provied death inside the ID label) we return a TXt response containing the pattern an the ip of requesting server
+	// if this request was the last (determained by the provied depth inside the ID label) we return a TXT response containing the pattern and the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
 	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength {
 		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+probe.inductionProbe.resolver+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
 		m.Answer = append(m.Answer, rr)
+		return w, m
+	} else if len(probeMetaData) > 3 && probeMetaData[3] == "nxopti" {
+		if r.Question[0].Name[0] == 'b' {
+			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, "false,,,"))
+			m.Answer = append(m.Answer, rr)
+		} else {
+			m.SetRcode(r, dns.RcodeNameError)
+		}
+		return w, m
 	} else if probe.currTokenNum == probe.tokenLength {
 		if len(probeMetaData) > 3 && probeMetaData[3] == "induction" {
 			rr := new(dns.CNAME)
@@ -207,7 +216,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			m.Answer = append(m.Answer, rr)
 		}
 	} else {
-		if len(probeMetaData) > 3 && probeMetaData[3] == "nx" {
+		if len(probeMetaData) > 3 && probeMetaData[3] == "qmin_mode" {
 			m.SetRcode(r, dns.RcodeNameError)
 			return w, m
 		} else {
