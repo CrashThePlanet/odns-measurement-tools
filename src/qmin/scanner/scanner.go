@@ -46,17 +46,19 @@ type QueryResult struct {
 	induction          bool
 	inductionPattern   string
 	inductionRequester string
-	nxBehaviour        bool
+	qmin_mode          bool
+	nxopti             int
 }
 
 type ParquetQueryResult struct {
-	ResolverIP   string `parquet:"resolver_ip,dict,zstd"`
-	RequestingIP string `parquet:"requesting_ip,dict,zstd"`
-	Response     string `parquet:"response,dict,zstd"`
-	InductionIP  string `parquet:"ind_requesting_ip,dict,zstd"`
-	InducedRes   string `parquet:"induced_res,dict,zstd"`
-	InducedQMIN  bool   `parquet:"induced_qmin"`
-	ModeCheck    bool   `parquet:"qmin_mode_check"`
+	ResolverIP     string `parquet:"resolver_ip,dict,zstd"`
+	RequestingIP   string `parquet:"requesting_ip,dict,zstd"`
+	Response       string `parquet:"response,dict,zstd"`
+	InductionIP    string `parquet:"ind_requesting_ip,dict,zstd"`
+	InducedRes     string `parquet:"induced_res,dict,zstd"`
+	InducedQMIN    bool   `parquet:"induced_qmin"`
+	ModeCheck      bool   `parquet:"qmin_mode_check"`
+	NxOptimization int    `parquet:"nxOptimization"`
 }
 
 type QMinScanner struct {
@@ -89,12 +91,12 @@ func partitionStringSlice(list []string, partitionSize int) [][]string {
 	return partitions
 }
 
-func domainAssembly(dnsServer string, tokenDepth int, induction bool, nxtest bool) string {
+func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode bool, nxopti bool) string {
 	octets := strings.Split(dnsServer, ".")
 	if len(octets) != 4 {
 		log.Fatalln("Please provide an correct IPv4 Adress: ", dnsServer)
 	}
-	if induction && nxtest {
+	if induction && qmin_mode {
 		log.Fatalln("Only test for induced queries OR NX behaviour in one query!")
 	}
 
@@ -122,12 +124,15 @@ func domainAssembly(dnsServer string, tokenDepth int, induction bool, nxtest boo
 	domain += idToken
 
 	if induction {
-		domain += "-induction" + "."
+		domain += "-induction"
 	}
-	if nxtest {
-		domain += "-nx" + "."
+	if qmin_mode {
+		domain += "-qmin_mode"
 	}
-	return domain + baseDomain
+	if nxopti {
+		domain += "-nxopti"
+	}
+	return domain + "." + baseDomain
 }
 
 func dnsQuery(domain string, server string, qType uint16, timeout time.Duration) QueryResult {
@@ -181,11 +186,14 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 	for _, a := range res.Answer {
 		if t, ok := a.(*dns.TXT); ok {
 			if !strings.Contains(t.Txt[0], ",") {
+				fmt.Println(t.Txt[0])
 				return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 			}
 			split := strings.Split(t.Txt[0], ",")
 			if len(split) > 1 && reg.MatchString(split[1]) {
 				return QueryResult{resolverIP: server, requestingIP: split[0], status: 0, Res: split[1], inductionRequester: split[2], inductionPattern: split[3]}
+			} else if t.Txt[0] == "false,,," {
+				return QueryResult{resolverIP: server, requestingIP: "NONE", status: 0, Res: split[0], inductionRequester: "", inductionPattern: ""}
 			} else {
 				return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 			}
@@ -194,17 +202,55 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 	return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "noTXTResponse"}
 }
 
-func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, nxtest bool) {
+func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool) {
 	defer wg.Done()
-	requestedDomain := domainAssembly(server, tokenDepth, induction, nxtest)
+	requestedDomain := domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 	res := dnsQuery(requestedDomain, server, qType, timeout)
 	// if timeout retry wiht longer timeout
 	if res.status == 3 {
 		res = dnsQuery(requestedDomain, server, qType, retryTimeout)
 	}
-	res.nxBehaviour = nxtest
+	res.qmin_mode = qmin_mode
 	res.induction = induction
+	res.nxopti = -1
 	ch <- res
+}
+
+func nxOptiRoutine(server string, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	domain := domainAssembly(server, 1, false, false, true)
+	d1 := "a." + domain
+	d2 := "b." + domain
+
+	res := dnsQuery(d1, server, qType, timeout)
+	if res.status == 3 {
+		res = dnsQuery(d1, server, qType, retryTimeout)
+	}
+	if res.status != 4 {
+		res.nxopti = -1
+		ch <- res
+		return
+	}
+
+	res2 := dnsQuery(d2, server, qType, timeout)
+	if res2.status == 3 {
+		res2 = dnsQuery(d1, server, qType, retryTimeout)
+	}
+	if res2.status != 4 && res2.status != 0 {
+		res.nxopti = -1
+		ch <- res
+		return
+	}
+	if res2.status == 4 {
+		res2.nxopti = 1
+		ch <- res2
+		return
+	}
+	if res2.Res == "false" {
+		res2.nxopti = 0
+	}
+	ch <- res2
 }
 
 func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int, timeout time.Duration, retryTrimeout time.Duration) *TempStore {
@@ -228,6 +274,8 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
 				wg.Add(1)
 				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
+				wg.Add(1)
+				go nxOptiRoutine(ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)
 			}
 			go func() {
 				wg.Wait()
@@ -236,13 +284,14 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 
 			for v := range ch {
 				resLine := ParquetQueryResult{
-					ResolverIP:   v.resolverIP,
-					RequestingIP: v.requestingIP,
-					Response:     v.Res,
-					InducedQMIN:  v.induction,
-					InducedRes:   v.inductionPattern,
-					InductionIP:  v.inductionRequester,
-					ModeCheck:    v.nxBehaviour,
+					ResolverIP:     v.resolverIP,
+					RequestingIP:   v.requestingIP,
+					Response:       v.Res,
+					InducedQMIN:    v.induction,
+					InducedRes:     v.inductionPattern,
+					InductionIP:    v.inductionRequester,
+					ModeCheck:      v.qmin_mode,
+					NxOptimization: v.nxopti,
 				}
 				tempDataFile.WriteSingle(resLine)
 			}
