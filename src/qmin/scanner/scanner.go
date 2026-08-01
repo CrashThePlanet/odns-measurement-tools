@@ -393,13 +393,11 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 			int(time.Millisecond)).String())
 
 	tempFile := scanResolvers(server, Cfg.LabelDepth, Cfg.Rounds, Cfg.BatchSize, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
-
-	defer tempFile.Delete()
+	fmt.Println(tempFile.Path())
 
 	writeOutputParquet(tempFile.Path(), workingDir+"/result.parquet")
 	// results := evalRsults(responses)
 
-	// writeOutputParquet(responses, workingDir+"/result.parquet")
 	fmt.Println("runtime: ", time.Since(start))
 
 	stats.Fin = time.Now()
@@ -414,4 +412,5 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	if err != nil {
 		log.Fatalln("Couldn't write Metadata.json file")
 	}
+	tempFile.Delete()
 }
