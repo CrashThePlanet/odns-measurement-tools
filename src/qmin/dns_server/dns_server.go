@@ -223,7 +223,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// if this request was the last (determained by the provied depth inside the ID label) we return a TXT response containing the pattern and the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
-	fmt.Println(probe.inductionProbe.currTokenNum, r.Question[0].Qtype)
+	fmt.Println(probe.inductionProbe.currTokenNum, dns.TypeToString[r.Question[0].Qtype])
 	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength && r.Question[0].Qtype == dns.TypeTXT {
 		fmt.Println("lelelel")
 		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+probe.inductionProbe.resolver+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
@@ -238,6 +238,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		}
 		return w, m
 	} else if probe.currTokenNum == probe.tokenLength {
+		fmt.Println("test 1")
 		if len(probeMetaData) > 3 && probeMetaData[3] == "induction" {
 			rr := new(dns.CNAME)
 			rr.Hdr = dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 3600}
@@ -247,7 +248,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 				domain += strconv.Itoa(i) + "."
 			}
 			rr.Target = domain + strings.Join(probeMetaData[:3], "-") + "." + s.baseURL
-
+			fmt.Println("test2")
 			m.Answer = append(m.Answer, rr)
 		} else if r.Question[0].Qtype == dns.TypeTXT {
 			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+",NULL,NULL"))
