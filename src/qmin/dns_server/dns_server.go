@@ -125,7 +125,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 				probeDomain = tmp + "." + probeDomain
 			}
 		}
-		fmt.Println(probeDomain)
 
 		// new request is longer than the longest recorded one and contains said longest requested domain --> more information
 		// should occur if qmin is used
@@ -166,6 +165,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 				inductionDomain = tmp + "." + inductionDomain
 			}
 		}
+		fmt.Println("inductionDomain:", inductionDomain)
 		if len(inductionDomain) < len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) {
 			var newSeq string
 			if len(inductionDomain) == 0 {
@@ -179,6 +179,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			s = slices.Insert(s, 0, newSeq+"_"+dns.TypeToString[r.Question[0].Qtype])
 			p.inductionProbe.resolver = strings.Split(w.RemoteAddr().String(), ":")[0]
 			p.inductionProbe.tokenSequence = s
+			fmt.Println("inductionSeq", p.inductionProbe.tokenSequence)
 		}
 
 		recentTok := p.inductionProbe.tokenSequence[len(probe.tokenSequence)-1]
@@ -222,6 +223,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// if this request was the last (determained by the provied depth inside the ID label) we return a TXT response containing the pattern and the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
+	fmt.Println(probe.inductionProbe.currTokenNum, r.Question[0].Qtype)
 	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength && r.Question[0].Qtype == dns.TypeTXT {
 		fmt.Println("lelelel")
 		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+probe.inductionProbe.resolver+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
