@@ -115,7 +115,17 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// check if this probe (identified by id Token) has sent a request before
 	if ok {
-		probeDomain := strings.Join(probe.tokenSequence, ".")
+		// probeDomain := strings.Join(probe.tokenSequence, ".")
+		probeDomain := ""
+		for i, pToken := range probe.tokenSequence {
+			tmp := strings.Split(pToken, "_")[0]
+			if i == 0 {
+				probeDomain = tmp
+			} else {
+				probeDomain = tmp + "." + probeDomain
+			}
+		}
+		fmt.Println(probeDomain)
 
 		// new request is longer than the longest recorded one and contains said longest requested domain --> more information
 		// should occur if qmin is used
@@ -132,14 +142,30 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			// it should not be a concurrency problem, as the entire block is inside a mutex ?!
 			// do not touch
 			s := append([]string(nil), probe.tokenSequence...)
-			s = slices.Insert(s, 0, newSeq)
+			s = slices.Insert(s, 0, newSeq+"_"+dns.TypeToString[r.Question[0].Qtype])
 			probe.tokenSequence = s
 			// end
-
 		}
+		recentTok := probe.tokenSequence[len(probe.tokenSequence)-1]
+
+		if len(probeDomain) == len(tokenSeq) && strings.Contains(tokenSeq, probeDomain) && r.Question[0].Qtype == dns.TypeTXT && recentTok[len(recentTok)-3:] != "_TXT" {
+			s := append([]string(nil), probe.tokenSequence...)
+			s = slices.Insert(s, 0, strconv.Itoa(probe.tokenLength)+"_"+dns.TypeToString[r.Question[0].Qtype])
+			probe.tokenSequence = s
+		}
+
 		probe.lastSeen = time.Now()
 	} else if p, ok := probes[idToken+"-induction"]; ok {
-		inductionDomain := strings.Join(p.inductionProbe.tokenSequence, ".")
+		//inductionDomain := strings.Join(p.inductionProbe.tokenSequence, ".")
+		inductionDomain := ""
+		for i, pToken := range p.inductionProbe.tokenSequence {
+			tmp := strings.Split(pToken, "_")[0]
+			if i == 0 {
+				inductionDomain = tmp
+			} else {
+				inductionDomain = tmp + "." + inductionDomain
+			}
+		}
 		if len(inductionDomain) < len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) {
 			var newSeq string
 			if len(inductionDomain) == 0 {
@@ -150,10 +176,19 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 			p.inductionProbe.currTokenNum = len(tokens)
 			s := append([]string(nil), p.inductionProbe.tokenSequence...)
-			s = slices.Insert(s, 0, newSeq)
+			s = slices.Insert(s, 0, newSeq+"_"+dns.TypeToString[r.Question[0].Qtype])
 			p.inductionProbe.resolver = strings.Split(w.RemoteAddr().String(), ":")[0]
 			p.inductionProbe.tokenSequence = s
 		}
+
+		recentTok := p.inductionProbe.tokenSequence[len(probe.tokenSequence)-1]
+
+		if len(inductionDomain) == len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) && r.Question[0].Qtype == dns.TypeTXT && recentTok[len(recentTok)-3:] != "_TXT" {
+			s := append([]string(nil), p.inductionProbe.tokenSequence...)
+			s = slices.Insert(s, 0, strconv.Itoa(probe.tokenLength)+"_"+dns.TypeToString[r.Question[0].Qtype])
+			p.inductionProbe.tokenSequence = s
+		}
+
 		p.lastSeen = time.Now()
 		probe = p
 		idToken += "-induction"
@@ -172,7 +207,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		probe = probeData{
 			tokenLength:      int(tokenLen),
 			lastSeen:         time.Now(),
-			tokenSequence:    []string{tokenSeq},
+			tokenSequence:    []string{tokenSeq + "_" + dns.TypeToString[r.Question[0].Qtype]},
 			currTokenNum:     len(tokens),
 			incomingResolver: strings.Split(w.RemoteAddr().String(), ":")[0], // RemoteAddr() contains IP and Port --> remove port
 			induction:        len(probeMetaData) > 3 && probeMetaData[3] == "induction",
@@ -187,7 +222,8 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// if this request was the last (determained by the provied depth inside the ID label) we return a TXT response containing the pattern and the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
-	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength {
+	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength && r.Question[0].Qtype == dns.TypeTXT {
+		fmt.Println("lelelel")
 		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+probe.inductionProbe.resolver+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
 		m.Answer = append(m.Answer, rr)
 		return w, m
@@ -211,7 +247,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			rr.Target = domain + strings.Join(probeMetaData[:3], "-") + "." + s.baseURL
 
 			m.Answer = append(m.Answer, rr)
-		} else {
+		} else if r.Question[0].Qtype == dns.TypeTXT {
 			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+",NULL,NULL"))
 			m.Answer = append(m.Answer, rr)
 		}
@@ -220,7 +256,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			m.SetRcode(r, dns.RcodeNameError)
 			return w, m
 		} else {
-			// if there are still new reuqests expected we return an A record pointing to this server
+			// if there are still new reuqests expected we return an NS record pointing to this server
 			// rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN A %s", r.Question[0].Name, s.ip))
 			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN NS %s", r.Question[0].Name, "ns1.tilhempel.info."))
 			m.Answer = append(m.Answer, rr)
