@@ -130,12 +130,10 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		// should occur if qmin is used
 		// some RR are sending shorter domains inbetween longer ones
 		// i've seen one that even does qmin inverse (so send fqdn first und remove one label with each successive request) -> idk why?!
-		fmt.Println("kkTest:", probeDomain, tokenSeq)
 		if len(probeDomain) < len(tokenSeq) && strings.Contains(tokenSeq, probeDomain) {
 			newSeq := tokenSeq[:len(tokenSeq)-len(probeDomain)-1]
 
 			probe.currTokenNum = len(tokens)
-			fmt.Println("curNumTok1:", probe.currTokenNum)
 			// force copy of tokenSequence slice
 			// some Resolver send the last request (the entiry requested sequence) twice (or more)
 			// for some reason the last label/token (the idToken) disappears inbetween these 2 requests
@@ -167,7 +165,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 				inductionDomain += "." + tmp
 			}
 		}
-		fmt.Println("inductionDomain:", inductionDomain)
 		if len(inductionDomain) < len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) {
 			var newSeq string
 			if len(inductionDomain) == 0 {
@@ -181,14 +178,13 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			s = slices.Insert(s, 0, newSeq+"_"+dns.TypeToString[r.Question[0].Qtype])
 			p.inductionProbe.resolver = strings.Split(w.RemoteAddr().String(), ":")[0]
 			p.inductionProbe.tokenSequence = s
-			fmt.Println("inductionSeq", p.inductionProbe.tokenSequence)
 		}
 
 		recentTok := p.inductionProbe.tokenSequence[len(p.inductionProbe.tokenSequence)-1]
 
 		if len(inductionDomain) == len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) && r.Question[0].Qtype == dns.TypeTXT && recentTok[len(recentTok)-3:] != "_TXT" {
 			s := append([]string(nil), p.inductionProbe.tokenSequence...)
-			s = slices.Insert(s, 0, strconv.Itoa(probe.tokenLength)+"_"+dns.TypeToString[r.Question[0].Qtype])
+			s = slices.Insert(s, 0, strconv.Itoa(p.tokenLength)+"_"+dns.TypeToString[r.Question[0].Qtype])
 			p.inductionProbe.tokenSequence = s
 		}
 
@@ -222,14 +218,10 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	}
 	probes[idToken] = probe
 	probesMutex.Unlock()
-	fmt.Println("curNumTok2:", probe.currTokenNum)
 
 	// if this request was the last (determained by the provied depth inside the ID label) we return a TXT response containing the pattern and the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
-	fmt.Println(probe.currTokenNum, dns.TypeToString[r.Question[0].Qtype])
-	fmt.Println("requested domain", r.Question[0].Name)
 	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength && r.Question[0].Qtype == dns.TypeTXT {
-		fmt.Println("lelelel")
 		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+probe.inductionProbe.resolver+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
 		m.Answer = append(m.Answer, rr)
 		return w, m
@@ -242,7 +234,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		}
 		return w, m
 	} else if probe.currTokenNum == probe.tokenLength {
-		fmt.Println("test 1")
 		if len(probeMetaData) > 3 && probeMetaData[3] == "induction" {
 			rr := new(dns.CNAME)
 			rr.Hdr = dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 3600}
@@ -252,7 +243,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 				domain += strconv.Itoa(i) + "."
 			}
 			rr.Target = domain + strings.Join(probeMetaData[:3], "-") + "." + s.baseURL
-			fmt.Println("test2")
 			m.Answer = append(m.Answer, rr)
 		} else if r.Question[0].Qtype == dns.TypeTXT {
 			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+",NULL,NULL"))
@@ -263,7 +253,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			m.SetRcode(r, dns.RcodeNameError)
 			return w, m
 		} else {
-			fmt.Println("111111")
 			// if there are still new reuqests expected we return an NS record pointing to this server
 			// rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN A %s", r.Question[0].Name, s.ip))
 			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN NS %s", r.Question[0].Name, "ns1.tilhempel.info."))
