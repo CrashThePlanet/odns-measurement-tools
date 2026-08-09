@@ -134,6 +134,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			newSeq := tokenSeq[:len(tokenSeq)-len(probeDomain)-1]
 
 			probe.currTokenNum = len(tokens)
+			fmt.Println("curNumTok1:", probe.currTokenNum)
 			// force copy of tokenSequence slice
 			// some Resolver send the last request (the entiry requested sequence) twice (or more)
 			// for some reason the last label/token (the idToken) disappears inbetween these 2 requests
@@ -220,10 +221,11 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	}
 	probes[idToken] = probe
 	probesMutex.Unlock()
+	fmt.Println("curNumTok2:", probe.currTokenNum)
 
 	// if this request was the last (determained by the provied depth inside the ID label) we return a TXT response containing the pattern and the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
-	fmt.Println(probe.inductionProbe.currTokenNum, dns.TypeToString[r.Question[0].Qtype])
+	fmt.Println(probe.currTokenNum, dns.TypeToString[r.Question[0].Qtype])
 	fmt.Println("requested domain", r.Question[0].Name)
 	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength && r.Question[0].Qtype == dns.TypeTXT {
 		fmt.Println("lelelel")
