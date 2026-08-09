@@ -1,12 +1,9 @@
 package qmin_scanner
 
 import (
-	"bufio"
 	"encoding/csv"
-	"encoding/gob"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"math/rand"
@@ -18,7 +15,6 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/parquet-go/parquet-go"
 )
 
 var baseDomain string
@@ -71,7 +67,7 @@ type QMinScanner struct {
 	retryTimeout time.Duration
 }
 
-var responsePattern = `^\d+(?:[.|]\d+)*[.|][^.|]+$`
+var responsePattern = `^(?:[0-9]+(?:\.[0-9]+)*_[A-Za-z0-9]+\|)*[0-9]+(?:\.[0-9]+)*\.[0-9A-Fa-f]{8}-[0-9]+-[^-|_]+(?:-(?:inducation|qmin_mode|nxopti))?_[A-Za-z0-9]+$`
 var reg = regexp.MustCompile(responsePattern)
 
 func partitionStringSlice(list []string, partitionSize int) [][]string {
@@ -127,7 +123,7 @@ func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode 
 		domain += "-induction"
 	}
 	if qmin_mode {
-		domain += "-qmin_mode"
+		domain += "-qminMode"
 	}
 	if nxopti {
 		domain += "-nxopti"
@@ -174,6 +170,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		case dns.RcodeRefused:
 			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 1, Res: "refused"}
 		default:
+			fmt.Println(server, ": unhandled error: rcode:", res.Rcode)
 			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 		}
 	}
@@ -189,11 +186,13 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 				return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 			}
 			split := strings.Split(t.Txt[0], ",")
-			if len(split) > 1 && reg.MatchString(split[1]) {
-				return QueryResult{resolverIP: server, requestingIP: split[0], status: 0, Res: split[1], inductionRequester: split[2], inductionPattern: split[3]}
-			} else if t.Txt[0] == "false,,," {
+			if t.Txt[0] == "false,,," {
 				return QueryResult{resolverIP: server, requestingIP: "NONE", status: 0, Res: split[0], inductionRequester: "", inductionPattern: ""}
+			}
+			if len(split) > 1 {
+				return QueryResult{resolverIP: server, requestingIP: split[0], status: 0, Res: split[1], inductionRequester: split[2], inductionPattern: split[3]}
 			} else {
+				fmt.Println("unhandled response error: ", t.Txt[0])
 				return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 			}
 		}
@@ -270,6 +269,8 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 
 			for _, ip := range part {
 				wg.Add(1)
+				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false)
+				wg.Add(1)
 				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
 				wg.Add(1)
 				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
@@ -302,69 +303,6 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 	}
 
 	return tempDataFile
-}
-
-func writeOutputParquet(tempPath string, outPath string) {
-	tempFile, err := os.Open(tempPath)
-	if err != nil {
-		log.Fatalln("Could not read temporary file: {}", err.Error())
-	}
-
-	defer tempFile.Close()
-
-	bufReader := bufio.NewReaderSize(tempFile, 1<<20)
-	dec := gob.NewDecoder(bufReader)
-
-	outFile, err := os.Create(outPath)
-	if err != nil {
-		log.Fatalln("could not create parquet output file: {}", err.Error())
-	}
-
-	defer func() {
-		if closeErr := outFile.Close(); err == nil {
-			err = closeErr
-		}
-	}()
-
-	writer := parquet.NewGenericWriter[ParquetQueryResult](outFile)
-	defer func() {
-		if closeErr := writer.Close(); err == nil {
-			err = closeErr
-		}
-	}()
-
-	buf := make([]ParquetQueryResult, 0, Cfg.BatchSize)
-	flush := func() error {
-		if len(buf) == 0 {
-			return nil
-		}
-
-		if _, writeErr := writer.Write(buf); writeErr != nil {
-			return fmt.Errorf("could not write row to parquet file: {}", writeErr.Error())
-		}
-		buf = buf[:0]
-		return nil
-	}
-
-	for {
-		var record ParquetQueryResult
-		decodeErr := dec.Decode(&record)
-		if decodeErr != nil {
-			if decodeErr == io.EOF {
-				break
-			}
-			log.Fatalln("could not decode row: {}", decodeErr.Error())
-		}
-		buf = append(buf, record)
-		if len(buf) >= Cfg.BatchSize {
-			if flushErr := flush(); flushErr != nil {
-				log.Fatalln("could not flush batch to file: {}", err.Error())
-			}
-		}
-	}
-	if flushErr := flush(); flushErr != nil {
-		log.Fatalln("could not flush batch to file: {}", err.Error())
-	}
 }
 
 func readCSV(path string) []string {
@@ -443,7 +381,7 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	tempFile := scanResolvers(server, Cfg.LabelDepth, Cfg.Rounds, Cfg.BatchSize, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
 	fmt.Println(tempFile.Path())
 
-	writeOutputParquet(tempFile.Path(), workingDir+"/result.parquet")
+	WriteOutputParquet(tempFile.Path(), workingDir+"/result.parquet")
 	// results := evalRsults(responses)
 
 	fmt.Println("runtime: ", time.Since(start))
