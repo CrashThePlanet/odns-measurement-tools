@@ -122,7 +122,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			if i == 0 {
 				probeDomain = tmp
 			} else {
-				probeDomain = tmp + "." + probeDomain
+				probeDomain += "." + tmp
 			}
 		}
 
@@ -130,6 +130,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		// should occur if qmin is used
 		// some RR are sending shorter domains inbetween longer ones
 		// i've seen one that even does qmin inverse (so send fqdn first und remove one label with each successive request) -> idk why?!
+		fmt.Println("kkTest:", probeDomain, tokenSeq)
 		if len(probeDomain) < len(tokenSeq) && strings.Contains(tokenSeq, probeDomain) {
 			newSeq := tokenSeq[:len(tokenSeq)-len(probeDomain)-1]
 
@@ -163,7 +164,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			if i == 0 {
 				inductionDomain = tmp
 			} else {
-				inductionDomain = tmp + "." + inductionDomain
+				inductionDomain += "." + tmp
 			}
 		}
 		fmt.Println("inductionDomain:", inductionDomain)
@@ -183,7 +184,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			fmt.Println("inductionSeq", p.inductionProbe.tokenSequence)
 		}
 
-		recentTok := p.inductionProbe.tokenSequence[len(probe.tokenSequence)-1]
+		recentTok := p.inductionProbe.tokenSequence[len(p.inductionProbe.tokenSequence)-1]
 
 		if len(inductionDomain) == len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) && r.Question[0].Qtype == dns.TypeTXT && recentTok[len(recentTok)-3:] != "_TXT" {
 			s := append([]string(nil), p.inductionProbe.tokenSequence...)
