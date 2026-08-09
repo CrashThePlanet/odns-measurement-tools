@@ -333,6 +333,36 @@ func (qsc *QMinScannerCommand) Run() (error, int) {
 	return nil, 0
 }
 
+type QMINScannerParquetWriterCommand struct {
+	SubCommand
+	temp_path string
+}
+
+func NewQMINScannerParquetWriterCommand() *QMINScannerParquetWriterCommand {
+	wc := &QMINScannerParquetWriterCommand{
+		SubCommand: SubCommand{
+			fs:          flag.NewFlagSet("temp_file_parquet_writer", flag.ContinueOnError),
+			description: "Write temp scan results file to parquet file",
+		},
+	}
+	wc.fs.StringVar(&wc.temp_path, "path", "", "Path to temp file")
+
+	return wc
+}
+
+func (pwc *QMINScannerParquetWriterCommand) Run() (error, int) {
+	if pwc.temp_path == "" {
+		return fmt.Errorf("Path is missing"), int(common.WRONG_INPUT_ARGS)
+	}
+	if _, err := os.Stat(pwc.temp_path); os.IsNotExist(err) {
+		return fmt.Errorf("File not Found"), int(common.WRONG_INPUT_ARGS)
+	}
+
+	qmin_scanner.WriteOutputParquet(pwc.temp_path, "./src/data/raw/qmin/out.parquet")
+
+	return nil, 0
+}
+
 func base(args []string) (error, int) {
 	if len(args) < 1 {
 		return fmt.Errorf("You must choose what to do!"), int(common.WRONG_INPUT_ARGS)
@@ -342,6 +372,7 @@ func base(args []string) (error, int) {
 		NewScannerCommand(),
 		NewQMinServerCommand(),
 		NewQMinScannerCommand(),
+		NewQMINScannerParquetWriterCommand(),
 	}
 
 	if args[0] == "help" {
