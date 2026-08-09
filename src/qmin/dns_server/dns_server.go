@@ -249,7 +249,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			m.Answer = append(m.Answer, rr)
 		}
 	} else {
-		if len(probeMetaData) > 3 && probeMetaData[3] == "qmin_mode" {
+		if len(probeMetaData) > 3 && probeMetaData[3] == "qminMode" {
 			m.SetRcode(r, dns.RcodeNameError)
 			return w, m
 		} else {
