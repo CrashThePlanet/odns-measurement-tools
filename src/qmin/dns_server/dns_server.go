@@ -149,7 +149,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 		if len(probeDomain) == len(tokenSeq) && strings.Contains(tokenSeq, probeDomain) && r.Question[0].Qtype == dns.TypeTXT && recentTok[len(recentTok)-3:] != "_TXT" {
 			s := append([]string(nil), probe.tokenSequence...)
-			s = slices.Insert(s, 0, strconv.Itoa(probe.tokenLength)+"_"+dns.TypeToString[r.Question[0].Qtype])
+			s = slices.Insert(s, 0, strconv.Itoa(probe.tokenLength-1)+"_"+dns.TypeToString[r.Question[0].Qtype])
 			probe.tokenSequence = s
 		}
 
@@ -184,7 +184,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 		if len(inductionDomain) == len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) && r.Question[0].Qtype == dns.TypeTXT && recentTok[len(recentTok)-3:] != "_TXT" {
 			s := append([]string(nil), p.inductionProbe.tokenSequence...)
-			s = slices.Insert(s, 0, strconv.Itoa(p.tokenLength)+"_"+dns.TypeToString[r.Question[0].Qtype])
+			s = slices.Insert(s, 0, strconv.Itoa(p.tokenLength-1)+"_"+dns.TypeToString[r.Question[0].Qtype])
 			p.inductionProbe.tokenSequence = s
 		}
 
