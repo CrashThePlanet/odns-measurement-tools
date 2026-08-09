@@ -224,6 +224,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	// if this request was the last (determained by the provied depth inside the ID label) we return a TXT response containing the pattern and the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
 	fmt.Println(probe.inductionProbe.currTokenNum, dns.TypeToString[r.Question[0].Qtype])
+	fmt.Println("requested domain", r.Question[0].Name)
 	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength && r.Question[0].Qtype == dns.TypeTXT {
 		fmt.Println("lelelel")
 		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+probe.inductionProbe.resolver+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
@@ -259,6 +260,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 			m.SetRcode(r, dns.RcodeNameError)
 			return w, m
 		} else {
+			fmt.Println("111111")
 			// if there are still new reuqests expected we return an NS record pointing to this server
 			// rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN A %s", r.Question[0].Name, s.ip))
 			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN NS %s", r.Question[0].Name, "ns1.tilhempel.info."))
