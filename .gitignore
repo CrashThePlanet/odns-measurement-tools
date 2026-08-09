@@ -19,6 +19,7 @@ __pycache__/
 output_selenium/
 *.json
 keys.py
+*.parquet
 
 src/data/raw/qmin/*
 !src/data/raw/qmin/.gitkeep

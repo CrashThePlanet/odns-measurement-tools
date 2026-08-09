@@ -109,6 +109,11 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		return w, m
 	}
 	probeMetaData := strings.Split(idToken, "-")
+	//  every valid id token hast at least 3 parts (IP in hex, token depth, nonce)
+	if len(probeMetaData) < 3 {
+		m.SetRcode(r, dns.RcodeNameError)
+		return w, m
+	}
 
 	probesMutex.Lock()
 	probe, ok := probes[idToken]
