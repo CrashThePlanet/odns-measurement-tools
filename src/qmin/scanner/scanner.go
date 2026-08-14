@@ -44,17 +44,19 @@ type QueryResult struct {
 	inductionRequester string
 	qmin_mode          bool
 	nxopti             int
+	nxcheck            bool
 }
 
 type ParquetQueryResult struct {
-	ResolverIP     string `parquet:"resolver_ip,dict,zstd"`
-	RequestingIP   string `parquet:"requesting_ip,dict,zstd"`
-	Response       string `parquet:"response,dict,zstd"`
-	InductionIP    string `parquet:"ind_requesting_ip,dict,zstd"`
-	InducedRes     string `parquet:"induced_res,dict,zstd"`
-	InducedQMIN    bool   `parquet:"induced_qmin"`
-	ModeCheck      bool   `parquet:"qmin_mode_check"`
-	NxOptimization int    `parquet:"nxOptimization"`
+	ResolverIP       string `parquet:"resolver_ip,dict,zstd"`
+	RequestingIP     string `parquet:"requesting_ip,dict,zstd"`
+	Response         string `parquet:"response,dict,zstd"`
+	InductionIP      string `parquet:"ind_requesting_ip,dict,zstd"`
+	InducedRes       string `parquet:"induced_res,dict,zstd"`
+	InducedQMINCheck bool   `parquet:"induced_qmin_check"`
+	ModeCheck        bool   `parquet:"qmin_mode_check"`
+	NXCheck          bool   `parquet:"nx_check"`
+	NxOptimization   int    `parquet:"nxOptimization"`
 }
 
 type QMinScanner struct {
@@ -210,6 +212,7 @@ func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retry
 	}
 	res.qmin_mode = qmin_mode
 	res.induction = induction
+	res.nxcheck = false
 	res.nxopti = -1
 	ch <- res
 }
@@ -230,11 +233,17 @@ func nxOptiRoutine(server string, timeout time.Duration, retryTimeout time.Durat
 		ch <- res
 		return
 	}
+	res.qmin_mode = false
+	res.induction = false
+	res.nxcheck = true
 
 	res2 := dnsQuery(d2, server, qType, timeout)
 	if res2.status == 3 {
 		res2 = dnsQuery(d1, server, qType, retryTimeout)
 	}
+	res2.qmin_mode = false
+	res2.induction = false
+	res2.nxcheck = true
 	if res2.status != 4 && res2.status != 0 {
 		res.nxopti = -1
 		ch <- res
@@ -284,14 +293,15 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 
 			for v := range ch {
 				resLine := ParquetQueryResult{
-					ResolverIP:     v.resolverIP,
-					RequestingIP:   v.requestingIP,
-					Response:       v.Res,
-					InducedQMIN:    v.induction,
-					InducedRes:     v.inductionPattern,
-					InductionIP:    v.inductionRequester,
-					ModeCheck:      v.qmin_mode,
-					NxOptimization: v.nxopti,
+					ResolverIP:       v.resolverIP,
+					RequestingIP:     v.requestingIP,
+					Response:         v.Res,
+					InducedQMINCheck: v.induction,
+					InducedRes:       v.inductionPattern,
+					InductionIP:      v.inductionRequester,
+					ModeCheck:        v.qmin_mode,
+					NxOptimization:   v.nxopti,
+					NXCheck:          v.nxcheck,
 				}
 				tempDataFile.WriteSingle(resLine)
 			}
