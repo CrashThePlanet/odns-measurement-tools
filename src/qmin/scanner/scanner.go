@@ -208,6 +208,7 @@ func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retry
 	res := dnsQuery(requestedDomain, server, qType, timeout)
 	// if timeout retry wiht longer timeout
 	if res.status == 3 {
+		requestedDomain = domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 		res = dnsQuery(requestedDomain, server, qType, retryTimeout)
 	}
 	res.qmin_mode = qmin_mode
@@ -278,13 +279,13 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 
 			for _, ip := range part {
 				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false)
-				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
-				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
-				wg.Add(1)
-				go nxOptiRoutine(ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)
+				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false) /*
+					wg.Add(1)
+					go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
+					wg.Add(1)
+					go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
+					wg.Add(1)
+					go nxOptiRoutine(ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)*/
 			}
 			go func() {
 				wg.Wait()

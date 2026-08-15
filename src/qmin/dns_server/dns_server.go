@@ -117,7 +117,6 @@ func updateProbeEntry(tokenLength int, probeSeq []string, tokenSeq string, token
 	recentTok := updatedSeq[0]
 
 	if len(domain) == len(tokenSeq) && strings.Contains(tokenSeq, domain) && requestQtype == dns.TypeTXT && !strings.HasSuffix(recentTok, "_TXT") {
-		fmt.Println(domain, tokenSeq, recentTok)
 		updatedSeq = append([]string(nil), updatedSeq...)
 		updatedSeq = slices.Insert(updatedSeq, 0, strconv.Itoa(tokenLength-1)+"_"+dns.TypeToString[requestQtype])
 	}
