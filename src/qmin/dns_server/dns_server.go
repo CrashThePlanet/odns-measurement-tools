@@ -69,6 +69,61 @@ func (s *QminDnsServer) cleanProbes() {
 	}
 }
 
+// the labels sequence also stores the RTYPE of each label-batch
+// this function removes them and sends the labels back as one string
+// this is basicly the last seend dns request minus the base url
+func stripRTypes(seq []string) (res string) {
+	for i, pToken := range seq {
+		tmp := strings.Split(pToken, "_")[0]
+		if i == 0 {
+			res = tmp
+		} else {
+			res += "." + tmp
+		}
+	}
+	return res
+}
+
+// check if a given seqence of tokens contains more information (either more tokens or same amout but different qtype) then the other given
+// if so update and return the new one
+func updateProbeEntry(tokenLength int, probeSeq []string, tokenSeq string, tokens []string, requestQtype uint16) (updatedSeq []string, tokenNum int, extended bool) {
+	// remove rtypes
+	domain := stripRTypes(probeSeq)
+	updatedSeq = probeSeq
+	// new request is longer than the longest recorded one and contains said longest requested domain --> more information
+	// should occur if qmin is used
+	// some RR are sending shorter domains inbetween longer ones
+	// i've seen one that even does qmin inverse (so send fqdn first und remove one label with each successive request) -> idk why?!
+	if len(domain) < len(tokenSeq) && strings.Contains(tokenSeq, domain) {
+		extended = true
+		var newSeq string
+		if len(domain) == 0 {
+			newSeq = tokenSeq
+		} else {
+			newSeq = tokenSeq[:len(tokenSeq)-len(domain)-1]
+		}
+
+		tokenNum = len(tokens)
+		// force copy of tokenSequence slice
+		// some Resolver send the last request (the entiry requested sequence) twice (or more)
+		// for some reason the last label/token (the idToken) disappears inbetween these 2 requests
+		// the forced copy solves this
+		// it should not be a concurrency problem, as the entire block is inside a mutex ?!
+		// do not touch
+		updatedSeq = append([]string(nil), probeSeq...)
+		updatedSeq = slices.Insert(updatedSeq, 0, newSeq+"_"+dns.TypeToString[requestQtype])
+		// end
+	}
+	recentTok := updatedSeq[len(updatedSeq)-1]
+
+	if len(domain) == len(tokenSeq) && strings.Contains(tokenSeq, domain) && requestQtype == dns.TypeTXT && !strings.HasSuffix(recentTok, "_TXT") {
+		fmt.Println(domain, tokenSeq, recentTok)
+		updatedSeq = append([]string(nil), updatedSeq...)
+		updatedSeq = slices.Insert(updatedSeq, 0, strconv.Itoa(tokenLength-1)+"_"+dns.TypeToString[requestQtype])
+	}
+	return
+}
+
 // handle incoming dns request
 func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.ResponseWriter, *dns.Msg) {
 	m := new(dns.Msg)
@@ -100,7 +155,9 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	}
 
 	tokenSeq := requestedDomain[:len(requestedDomain)-len(s.baseURL)-1]
+	// get every label in domain minus the base domain
 	tokens := strings.Split(tokenSeq, ".")
+	// the id token holds the metadata for this requests run
 	idToken := tokens[len(tokens)-1]
 
 	// TODO: check for valid id token
@@ -108,6 +165,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		m.SetRcode(r, dns.RcodeRefused)
 		return w, m
 	}
+
 	probeMetaData := strings.Split(idToken, "-")
 	//  every valid id token hast at least 3 parts (IP in hex, token depth, nonce)
 	if len(probeMetaData) < 3 {
@@ -120,77 +178,24 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// check if this probe (identified by id Token) has sent a request before
 	if ok {
-		// probeDomain := strings.Join(probe.tokenSequence, ".")
-		probeDomain := ""
-		for i, pToken := range probe.tokenSequence {
-			tmp := strings.Split(pToken, "_")[0]
-			if i == 0 {
-				probeDomain = tmp
-			} else {
-				probeDomain += "." + tmp
-			}
+		// later on each sequence of tokens (requested by the probe) will also contain the RTYPE
+		// the seperator is the underscore "_"
+		// the scanner should not create domains with an underscore in them
+
+		updatedSeq, tokenNum, extended := updateProbeEntry(probe.tokenLength, probe.tokenSequence, tokenSeq, tokens, r.Question[0].Qtype)
+		probe.tokenSequence = updatedSeq
+		if extended {
+			probe.currTokenNum = tokenNum
 		}
-
-		// new request is longer than the longest recorded one and contains said longest requested domain --> more information
-		// should occur if qmin is used
-		// some RR are sending shorter domains inbetween longer ones
-		// i've seen one that even does qmin inverse (so send fqdn first und remove one label with each successive request) -> idk why?!
-		if len(probeDomain) < len(tokenSeq) && strings.Contains(tokenSeq, probeDomain) {
-			newSeq := tokenSeq[:len(tokenSeq)-len(probeDomain)-1]
-
-			probe.currTokenNum = len(tokens)
-			// force copy of tokenSequence slice
-			// some Resolver send the last request (the entiry requested sequence) twice (or more)
-			// for some reason the last label/token (the idToken) disappears inbetween these 2 requests
-			// the forced copy solves this
-			// it should not be a concurrency problem, as the entire block is inside a mutex ?!
-			// do not touch
-			s := append([]string(nil), probe.tokenSequence...)
-			s = slices.Insert(s, 0, newSeq+"_"+dns.TypeToString[r.Question[0].Qtype])
-			probe.tokenSequence = s
-			// end
-		}
-		recentTok := probe.tokenSequence[len(probe.tokenSequence)-1]
-
-		if len(probeDomain) == len(tokenSeq) && strings.Contains(tokenSeq, probeDomain) && r.Question[0].Qtype == dns.TypeTXT && recentTok[len(recentTok)-3:] != "_TXT" {
-			s := append([]string(nil), probe.tokenSequence...)
-			s = slices.Insert(s, 0, strconv.Itoa(probe.tokenLength-1)+"_"+dns.TypeToString[r.Question[0].Qtype])
-			probe.tokenSequence = s
-		}
-
 		probe.lastSeen = time.Now()
+
 	} else if p, ok := probes[idToken+"-induction"]; ok {
-		//inductionDomain := strings.Join(p.inductionProbe.tokenSequence, ".")
-		inductionDomain := ""
-		for i, pToken := range p.inductionProbe.tokenSequence {
-			tmp := strings.Split(pToken, "_")[0]
-			if i == 0 {
-				inductionDomain = tmp
-			} else {
-				inductionDomain += "." + tmp
-			}
-		}
-		if len(inductionDomain) < len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) {
-			var newSeq string
-			if len(inductionDomain) == 0 {
-				newSeq = tokenSeq
-			} else {
-				newSeq = tokenSeq[:len(tokenSeq)-len(inductionDomain)-1]
-			}
 
-			p.inductionProbe.currTokenNum = len(tokens)
-			s := append([]string(nil), p.inductionProbe.tokenSequence...)
-			s = slices.Insert(s, 0, newSeq+"_"+dns.TypeToString[r.Question[0].Qtype])
+		updatedInductionSeq, tokenNum, extended := updateProbeEntry(probe.tokenLength, p.inductionProbe.tokenSequence, tokenSeq, tokens, r.Question[0].Qtype)
+		p.inductionProbe.tokenSequence = updatedInductionSeq
+		if extended {
+			p.inductionProbe.currTokenNum = tokenNum
 			p.inductionProbe.resolver = strings.Split(w.RemoteAddr().String(), ":")[0]
-			p.inductionProbe.tokenSequence = s
-		}
-
-		recentTok := p.inductionProbe.tokenSequence[len(p.inductionProbe.tokenSequence)-1]
-
-		if len(inductionDomain) == len(tokenSeq) && strings.Contains(tokenSeq, inductionDomain) && r.Question[0].Qtype == dns.TypeTXT && recentTok[len(recentTok)-3:] != "_TXT" {
-			s := append([]string(nil), p.inductionProbe.tokenSequence...)
-			s = slices.Insert(s, 0, strconv.Itoa(p.tokenLength-1)+"_"+dns.TypeToString[r.Question[0].Qtype])
-			p.inductionProbe.tokenSequence = s
 		}
 
 		p.lastSeen = time.Now()
@@ -199,10 +204,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	} else {
 		// first time this domain is requested
 		// create entry in probes map
-
-		// Label to identify the probe run:
-		// XXXXXXXX | XX | XXXX... (pipes just for visualisation)
-		// IPv4 of Resolver (Hex) | max token depth (int) | randomized numbers to circumvent caches (length loosly dependent on number of runs per resolver)
 
 		tokenLen, err := strconv.ParseInt(probeMetaData[1], 10, 64)
 		if err != nil {
