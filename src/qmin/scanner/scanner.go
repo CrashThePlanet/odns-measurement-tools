@@ -191,7 +191,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 			if t.Txt[0] == "false,,," {
 				return QueryResult{resolverIP: server, requestingIP: "NONE", status: 0, Res: split[0], inductionRequester: "", inductionPattern: ""}
 			}
-			if len(split) > 1 {
+			if len(split) > 3 {
 				return QueryResult{resolverIP: server, requestingIP: split[0], status: 0, Res: split[1], inductionRequester: split[2], inductionPattern: split[3]}
 			} else {
 				fmt.Println("unhandled response error: ", t.Txt[0])
@@ -279,13 +279,13 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 
 			for _, ip := range part {
 				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false) /*
-					wg.Add(1)
-					go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
-					wg.Add(1)
-					go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
-					wg.Add(1)
-					go nxOptiRoutine(ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)*/
+				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false)
+				wg.Add(1)
+				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
+				wg.Add(1)
+				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
+				wg.Add(1)
+				go nxOptiRoutine(ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)
 			}
 			go func() {
 				wg.Wait()
@@ -334,6 +334,7 @@ func readCSV(path string) []string {
 			ips = append(ips, record[0])
 		}
 	}
+	file.Close()
 	return ips
 }
 

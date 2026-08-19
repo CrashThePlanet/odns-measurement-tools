@@ -358,7 +358,7 @@ func (pwc *QMINScannerParquetWriterCommand) Run() (error, int) {
 		return fmt.Errorf("File not Found"), int(common.WRONG_INPUT_ARGS)
 	}
 
-	qmin_scanner.WriteOutputParquet(pwc.temp_path, "./src/data/raw/qmin/out.parquet")
+	qmin_scanner.WriteOutputParquet(pwc.temp_path, "./data/raw/qmin/out.parquet")
 
 	return nil, 0
 }

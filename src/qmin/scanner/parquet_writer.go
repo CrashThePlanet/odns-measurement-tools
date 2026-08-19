@@ -40,7 +40,7 @@ func WriteOutputParquet(tempPath string, outPath string) {
 		}
 	}()
 
-	buf := make([]ParquetQueryResult, 0, Cfg.BatchSize)
+	buf := make([]ParquetQueryResult, 0, Cfg.BatchSize/2)
 	flush := func() error {
 		if len(buf) == 0 {
 			return nil
@@ -63,7 +63,7 @@ func WriteOutputParquet(tempPath string, outPath string) {
 			log.Fatalln("could not decode row: {}", decodeErr.Error())
 		}
 		buf = append(buf, record)
-		if len(buf) >= Cfg.BatchSize {
+		if len(buf) >= Cfg.BatchSize/2 {
 			if flushErr := flush(); flushErr != nil {
 				log.Fatalln("could not flush batch to file: {}", err.Error())
 			}
