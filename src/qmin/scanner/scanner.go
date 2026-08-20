@@ -1,6 +1,7 @@
 package qmin_scanner
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -14,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miekg/dns"
+	"codeberg.org/miekg/dns"
 )
 
 var baseDomain string
@@ -134,20 +135,19 @@ func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode 
 }
 
 func dnsQuery(domain string, server string, qType uint16, timeout time.Duration) QueryResult {
-	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(domain), qType)
+	m := dns.NewMsg(domain, qType)
 	m.RecursionDesired = true
 
 	// increase UDP Buffer size
 	// some Resolver send too large packages
 	if Cfg.Protocol == "udp" {
-		m.SetEdns0(4096, false)
+		m.UDPSize, m.Security = 4096, false
 	}
+	c := dns.NewClient()
+	c.ReadTimeout = timeout
+	c.WriteTimeout = timeout
 
-	c := new(dns.Client)
-	c.Net = Cfg.Protocol
-	c.Timeout = timeout
-	res, _, err := c.Exchange(m, server+":"+strconv.Itoa(Cfg.Port))
+	res, _, err := c.Exchange(context.TODO(), m, Cfg.Protocol, server+":"+strconv.Itoa(Cfg.Port))
 
 	if err != nil {
 		if strings.Contains(err.Error(), "i/o timeout") {
@@ -173,6 +173,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 1, Res: "refused"}
 		default:
 			fmt.Println(server, ": unhandled error: rcode:", res.Rcode)
+			fmt.Println(res)
 			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 		}
 	}
