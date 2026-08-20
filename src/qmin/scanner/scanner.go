@@ -173,7 +173,6 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 1, Res: "refused"}
 		default:
 			fmt.Println(server, ": unhandled error: rcode:", res.Rcode)
-			fmt.Println(res)
 			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 		}
 	}
