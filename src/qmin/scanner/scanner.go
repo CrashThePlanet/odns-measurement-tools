@@ -194,7 +194,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 			if len(split) > 3 {
 				return QueryResult{resolverIP: server, requestingIP: split[0], status: 0, Res: split[1], inductionRequester: split[2], inductionPattern: split[3]}
 			} else {
-				fmt.Println("unhandled response error: ", t.Txt[0])
+				fmt.Println(server, ": unhandled response error: ", t.Txt[0])
 				return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 			}
 		}
