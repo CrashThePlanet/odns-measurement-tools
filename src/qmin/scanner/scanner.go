@@ -48,11 +48,11 @@ type QueryResult struct {
 }
 
 type ParquetQueryResult struct {
-	ResolverIP       string `parquet:"resolver_ip,dict,zstd"`
-	RequestingIP     string `parquet:"requesting_ip,dict,zstd"`
-	Response         string `parquet:"response,dict,zstd"`
-	InductionIP      string `parquet:"ind_requesting_ip,dict,zstd"`
-	InducedRes       string `parquet:"induced_res,dict,zstd"`
+	ResolverIP       string `parquet:"resolver_ip,zstd"`
+	RequestingIP     string `parquet:"requesting_ip,zstd"`
+	Response         string `parquet:"response,zstd"`
+	InductionIP      string `parquet:"ind_requesting_ip,zstd"`
+	InducedRes       string `parquet:"induced_res,zstd"`
 	InducedQMINCheck bool   `parquet:"induced_qmin_check"`
 	ModeCheck        bool   `parquet:"qmin_mode_check"`
 	NXCheck          bool   `parquet:"nx_check"`

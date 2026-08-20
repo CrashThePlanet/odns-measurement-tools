@@ -5,16 +5,15 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
-	"log"
 	"os"
 
 	"github.com/parquet-go/parquet-go"
 )
 
-func WriteOutputParquet(tempPath string, outPath string) {
+func WriteOutputParquet(tempPath string, outPath string) error {
 	tempFile, err := os.Open(tempPath)
 	if err != nil {
-		log.Fatalln("Could not read temporary file: {}", err.Error())
+		return fmt.Errorf("could not read temporary file: %w", err)
 	}
 
 	defer tempFile.Close()
@@ -24,7 +23,7 @@ func WriteOutputParquet(tempPath string, outPath string) {
 
 	outFile, err := os.Create(outPath)
 	if err != nil {
-		log.Fatalln("could not create parquet output file: {}", err.Error())
+		return fmt.Errorf("could not create parquet output file: %w", err)
 	}
 
 	defer func() {
@@ -40,7 +39,9 @@ func WriteOutputParquet(tempPath string, outPath string) {
 		}
 	}()
 
-	buf := make([]ParquetQueryResult, 0, Cfg.BatchSize/2)
+	batchSize := 100
+	buf := make([]ParquetQueryResult, 0, batchSize)
+
 	flush := func() error {
 		if len(buf) == 0 {
 			return nil
@@ -54,22 +55,26 @@ func WriteOutputParquet(tempPath string, outPath string) {
 	}
 
 	for {
-		var record ParquetQueryResult
-		decodeErr := dec.Decode(&record)
-		if decodeErr != nil {
+		buf = append(buf, ParquetQueryResult{})
+
+		if decodeErr := dec.Decode(&buf[len(buf)-1]); decodeErr != nil {
 			if decodeErr == io.EOF {
+				buf = buf[:len(buf)-1]
 				break
 			}
-			log.Fatalln("could not decode row: {}", decodeErr.Error())
+			return fmt.Errorf("could not decode row: %w", decodeErr)
 		}
-		buf = append(buf, record)
-		if len(buf) >= Cfg.BatchSize/2 {
+
+		if len(buf) >= batchSize {
 			if flushErr := flush(); flushErr != nil {
-				log.Fatalln("could not flush batch to file: {}", err.Error())
+				return flushErr
 			}
 		}
+
 	}
 	if flushErr := flush(); flushErr != nil {
-		log.Fatalln("could not flush batch to file: {}", err.Error())
+		return flushErr
 	}
+
+	return err
 }
