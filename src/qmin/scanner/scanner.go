@@ -2,9 +2,9 @@ package qmin_scanner
 
 import (
 	"context"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"math/rand"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"codeberg.org/miekg/dns"
+	"github.com/parquet-go/parquet-go"
 )
 
 var baseDomain string
@@ -72,25 +73,33 @@ type QMinScanner struct {
 	retryTimeout time.Duration
 }
 
+type InputFileFormat struct {
+	// protocol                 string
+	Queried_ip *string `parquet:"queried_ip"`
+	//replying_ip              string
+	//backend_resolver         string
+	//timestamp_request        string
+	Resolver_type *string `parquet:"resolver_type"`
+	//queried_ip_country       string
+	//replying_ip_country      string
+	//queried_ip_asn           int64
+	//replying_ip_asn          int64
+	//queried_ip_prefix        string
+	//replying_ip_prefix       string
+	//queried_ip_org           string
+	//replying_ip_org          string
+	//backend_resolver_country string
+	//backend_resolver_asn     int64
+	//backend_resolver_prefix  string
+	//backend_resolver_org     string
+	//scan_date                string
+	//queried_ip_uint32        uint32
+	//replying_ip_uint32       uint32
+	// backend_resolver_uint32  uint32
+}
+
 var responsePattern = `^(?:[0-9]+(?:\.[0-9]+)*_[A-Za-z0-9]+\|)*[0-9]+(?:\.[0-9]+)*\.[0-9A-Fa-f]{8}-[0-9]+-[^-|_]+(?:-(?:inducation|qmin_mode|nxopti))?_[A-Za-z0-9]+$`
 var reg = regexp.MustCompile(responsePattern)
-
-func partitionStringSlice(list []Resolver, partitionSize int) [][]Resolver {
-	if len(list) < partitionSize {
-		return [][]Resolver{list}
-	}
-
-	var partitions = [][]Resolver{}
-
-	for i := 0; i <= len(list); i += partitionSize {
-		if i+partitionSize > len(list) {
-			partitions = append(partitions, list[i:])
-		} else {
-			partitions = append(partitions, list[i:i+partitionSize])
-		}
-	}
-	return partitions
-}
 
 func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode bool, nxopti bool) string {
 	octets := strings.Split(dnsServer, ".")
@@ -204,8 +213,8 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 	return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "noTXTResponse"}
 }
 
-func dnsQueryRoutine(tokenDepth int, resolver Resolver, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool) {
-	server := resolver.ip
+func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool) {
+	server := *resolver.Queried_ip
 	defer wg.Done()
 	requestedDomain := domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 	res := dnsQuery(requestedDomain, server, qType, timeout)
@@ -214,7 +223,7 @@ func dnsQueryRoutine(tokenDepth int, resolver Resolver, timeout time.Duration, r
 		requestedDomain = domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 		res = dnsQuery(requestedDomain, server, qType, retryTimeout)
 	}
-	res.ResolverType = resolver.resolver_type
+	res.ResolverType = *resolver.Resolver_type
 	res.qmin_mode = qmin_mode
 	res.induction = induction
 	res.nxcheck = false
@@ -222,9 +231,9 @@ func dnsQueryRoutine(tokenDepth int, resolver Resolver, timeout time.Duration, r
 	ch <- res
 }
 
-func nxOptiRoutine(resolver Resolver, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
+func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
 	defer wg.Done()
-	server := resolver.ip
+	server := *(resolver.Queried_ip)
 
 	domain := domainAssembly(server, 1, false, false, true)
 	d1 := "a." + domain
@@ -238,7 +247,7 @@ func nxOptiRoutine(resolver Resolver, timeout time.Duration, retryTimeout time.D
 	res.qmin_mode = false
 	res.induction = false
 	res.nxcheck = true
-	res.ResolverType = resolver.resolver_type
+	res.ResolverType = *resolver.Resolver_type
 	if res.status != 4 {
 		res.nxopti = -1
 		ch <- res
@@ -252,7 +261,7 @@ func nxOptiRoutine(resolver Resolver, timeout time.Duration, retryTimeout time.D
 	res2.qmin_mode = false
 	res2.induction = false
 	res2.nxcheck = true
-	res2.ResolverType = resolver.resolver_type
+	res2.ResolverType = *resolver.Resolver_type
 	if res2.status != 4 && res2.status != 0 {
 		res.nxopti = -1
 		ch <- res
@@ -269,87 +278,90 @@ func nxOptiRoutine(resolver Resolver, timeout time.Duration, retryTimeout time.D
 	ch <- res2
 }
 
-func scanResolvers(resolver []Resolver, tokenDepth int, rounds int, batchSize int, timeout time.Duration, retryTrimeout time.Duration) *TempStore {
+func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth int, rounds int, timeout time.Duration, retryTrimeout time.Duration) {
 
-	parts := partitionStringSlice(resolver, batchSize)
+	for i := 0; i < rounds; i++ {
+		fmt.Println("round", i+1, "/", rounds)
+		ch := make(chan QueryResult)
+		var wg sync.WaitGroup
 
+		for _, res := range resolver {
+			if res.Queried_ip == nil || res.Resolver_type == nil {
+				log.Println("nil value type (skipped): %w", res)
+				continue
+			}
+			wg.Add(1)
+			go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false)
+			wg.Add(1)
+			go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
+			wg.Add(1)
+			go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
+			wg.Add(1)
+			go nxOptiRoutine(res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)
+		}
+		go func() {
+			wg.Wait()
+			close(ch)
+		}()
+
+		for v := range ch {
+			resLine := ParquetQueryResult{
+				ResolverIP:       v.resolverIP,
+				RequestingIP:     v.requestingIP,
+				Response:         v.Res,
+				InducedQMINCheck: v.induction,
+				InducedRes:       v.inductionPattern,
+				InductionIP:      v.inductionRequester,
+				ModeCheck:        v.qmin_mode,
+				NxOptimization:   v.nxopti,
+				NXCheck:          v.nxcheck,
+				ResolverType:     v.ResolverType,
+			}
+			tempFile.WriteSingle(resLine)
+		}
+	}
+}
+
+func readInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
 	tempDataFile, err := NewTempStore()
 	if err != nil {
-		log.Fatalln(err)
+		return nil, fmt.Errorf("Could not create Temporary file: %w", err)
 	}
 
-	for i, part := range parts {
-		fmt.Println("part", i+1, "/", len(parts))
-		for i := 0; i < rounds; i++ {
-			fmt.Println("round", i+1, "/", rounds)
-			ch := make(chan QueryResult)
-			var wg sync.WaitGroup
+	inputFile, err := os.Open(inputPath)
+	if err != nil {
+		return nil, fmt.Errorf("Could not Open input file: %w", err)
+	}
+	defer inputFile.Close()
 
-			for _, resolver := range part {
-				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, resolver, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false)
-				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, resolver, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
-				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, resolver, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
-				wg.Add(1)
-				go nxOptiRoutine(resolver, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)
-			}
-			go func() {
-				wg.Wait()
-				close(ch)
-			}()
+	reader := parquet.NewGenericReader[InputFileFormat](inputFile)
+	defer reader.Close()
 
-			for v := range ch {
-				resLine := ParquetQueryResult{
-					ResolverIP:       v.resolverIP,
-					RequestingIP:     v.requestingIP,
-					Response:         v.Res,
-					InducedQMINCheck: v.induction,
-					InducedRes:       v.inductionPattern,
-					InductionIP:      v.inductionRequester,
-					ModeCheck:        v.qmin_mode,
-					NxOptimization:   v.nxopti,
-					NXCheck:          v.nxcheck,
-					ResolverType:     v.ResolverType,
-				}
-				tempDataFile.WriteSingle(resLine)
-			}
+	partIndex := 1
+	numParts := math.Ceil(float64(reader.NumRows()) / float64(batchSize))
+
+	rows := make([]InputFileFormat, batchSize)
+	for {
+		log.Println("Part", partIndex, "of", numParts)
+		partIndex++
+
+		n, err := reader.Read(rows)
+		if n > 0 {
+			scanResolvers(rows[:n], tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return tempDataFile, fmt.Errorf("error while reading data: %w", err)
 		}
 	}
 
 	if err := tempDataFile.Close(); err != nil {
-		log.Fatalln(err)
+		return tempDataFile, fmt.Errorf("Error while trying to close temporary file: %w", err)
 	}
 
-	return tempDataFile
-}
-
-type Resolver struct {
-	ip            string
-	resolver_type string
-}
-
-func readCSV(path string) []Resolver {
-	file, err := os.Open(path)
-	if err != nil {
-		log.Fatalln("Couldn't open CSV file: ", err.Error())
-	}
-	reader := csv.NewReader(file)
-	records, _ := reader.ReadAll()
-
-	var ips = []Resolver{}
-	if records[0][1] == "queried_ip" || records[0][1] == "ip_request" {
-		for _, record := range records[1:] {
-			ips = append(ips, Resolver{ip: record[1], resolver_type: record[5]})
-		}
-	} else if records[0][0] == "resolverIP" {
-		for _, record := range records[1:] {
-			ips = append(ips, Resolver{ip: record[0], resolver_type: ""})
-		}
-	}
-	file.Close()
-	return ips
+	return tempDataFile, nil
 }
 
 func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
@@ -366,20 +378,40 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	start := time.Now()
 	stats.Start = start
 
-	var server []Resolver
+	baseDomain = Cfg.BaseURL
+	randMax = Cfg.RandMax
 
+	// var server []Resolver
+
+	var temp *TempStore
 	// user can input ether one single ip or a csv file containing multiple
 	// default is the csv file
 	if inputIsResolver {
-		// TODO: check for valid ip address
-		server = []Resolver{{ip: inArg, resolver_type: "Unset"}}
+		tempDataFile, err := NewTempStore()
+		if err != nil {
+			log.Fatalln("Could not create Temporary file: %w", err)
+		}
+		res_type := "Unset"
+		scanResolvers([]InputFileFormat{{Queried_ip: &inArg, Resolver_type: &res_type}}, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
+
+		if err := tempDataFile.Close(); err != nil {
+			log.Println("Temporary file path: %w", temp.Path())
+			log.Fatalln("Error while trying to close temporary file: %w", err)
+		}
+		temp = tempDataFile
 	} else {
 		if _, err := os.Stat(inArg); os.IsNotExist(err) {
 			log.Fatalln("File not Found")
 		}
-		server = readCSV(inArg)
+		temp1, err := readInputAndScan(inArg, Cfg.BatchSize)
+		if err != nil {
+			if temp1 != nil {
+				log.Println("Temporary file path: %w", temp.Path())
+			}
+			log.Fatal(err)
+		}
+		temp = temp1
 	}
-	stats.NumResolver = len(server)
 
 	// get permission of output directory to pass them down
 	dirStat, err := os.Stat(Cfg.OutputDir)
@@ -393,22 +425,16 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	workingDir := Cfg.OutputDir + start.Local().Format("2006-01-02_15-04")
 	os.Mkdir(workingDir, dirStat.Mode().Perm())
 
-	baseDomain = Cfg.BaseURL
-	randMax = Cfg.RandMax
+	/*fmt.Println("estimated maximum runtime:", time.Duration(
+	int(
+		math.Ceil(
+			float64(len(server)/Cfg.BatchSize)))*
+		Cfg.Rounds*
+		(Cfg.Timeout+Cfg.RetryTimeout)*
+		int(time.Millisecond)).String())*/
 
-	fmt.Println("estimated maximum runtime:", time.Duration(
-		int(
-			math.Ceil(
-				float64(len(server)/Cfg.BatchSize)))*
-			Cfg.Rounds*
-			(Cfg.Timeout+Cfg.RetryTimeout)*
-			int(time.Millisecond)).String())
-
-	tempFile := scanResolvers(server, Cfg.LabelDepth, Cfg.Rounds, Cfg.BatchSize, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
-	fmt.Println(tempFile.Path())
-
-	WriteOutputParquet(tempFile.Path(), workingDir+"/result.parquet")
-	// results := evalRsults(responses)
+	log.Println("Temporary file path: %w", temp.Path())
+	WriteOutputParquet(temp.Path(), workingDir+"/result.parquet")
 
 	fmt.Println("runtime: ", time.Since(start))
 
@@ -424,5 +450,5 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	if err != nil {
 		log.Fatalln("Couldn't write Metadata.json file")
 	}
-	tempFile.Delete()
+	temp.Delete()
 }
