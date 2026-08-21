@@ -46,10 +46,12 @@ type QueryResult struct {
 	qmin_mode          bool
 	nxopti             int
 	nxcheck            bool
+	ResolverType       string
 }
 
 type ParquetQueryResult struct {
 	ResolverIP       string `parquet:"resolver_ip,zstd"`
+	ResolverType     string `parquet:"resolver_type,dict,zstd"`
 	RequestingIP     string `parquet:"requesting_ip,zstd"`
 	Response         string `parquet:"response,zstd"`
 	InductionIP      string `parquet:"ind_requesting_ip,zstd"`
@@ -73,12 +75,12 @@ type QMinScanner struct {
 var responsePattern = `^(?:[0-9]+(?:\.[0-9]+)*_[A-Za-z0-9]+\|)*[0-9]+(?:\.[0-9]+)*\.[0-9A-Fa-f]{8}-[0-9]+-[^-|_]+(?:-(?:inducation|qmin_mode|nxopti))?_[A-Za-z0-9]+$`
 var reg = regexp.MustCompile(responsePattern)
 
-func partitionStringSlice(list []string, partitionSize int) [][]string {
+func partitionStringSlice(list []Resolver, partitionSize int) [][]Resolver {
 	if len(list) < partitionSize {
-		return [][]string{list}
+		return [][]Resolver{list}
 	}
 
-	var partitions = [][]string{}
+	var partitions = [][]Resolver{}
 
 	for i := 0; i <= len(list); i += partitionSize {
 		if i+partitionSize > len(list) {
@@ -202,7 +204,8 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 	return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "noTXTResponse"}
 }
 
-func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool) {
+func dnsQueryRoutine(tokenDepth int, resolver Resolver, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool) {
+	server := resolver.ip
 	defer wg.Done()
 	requestedDomain := domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 	res := dnsQuery(requestedDomain, server, qType, timeout)
@@ -211,6 +214,7 @@ func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retry
 		requestedDomain = domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 		res = dnsQuery(requestedDomain, server, qType, retryTimeout)
 	}
+	res.ResolverType = resolver.resolver_type
 	res.qmin_mode = qmin_mode
 	res.induction = induction
 	res.nxcheck = false
@@ -218,25 +222,28 @@ func dnsQueryRoutine(tokenDepth int, server string, timeout time.Duration, retry
 	ch <- res
 }
 
-func nxOptiRoutine(server string, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
+func nxOptiRoutine(resolver Resolver, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
 	defer wg.Done()
+	server := resolver.ip
 
 	domain := domainAssembly(server, 1, false, false, true)
 	d1 := "a." + domain
 	d2 := "b." + domain
 
 	res := dnsQuery(d1, server, qType, timeout)
+
 	if res.status == 3 {
 		res = dnsQuery(d1, server, qType, retryTimeout)
 	}
+	res.qmin_mode = false
+	res.induction = false
+	res.nxcheck = true
+	res.ResolverType = resolver.resolver_type
 	if res.status != 4 {
 		res.nxopti = -1
 		ch <- res
 		return
 	}
-	res.qmin_mode = false
-	res.induction = false
-	res.nxcheck = true
 
 	res2 := dnsQuery(d2, server, qType, timeout)
 	if res2.status == 3 {
@@ -245,6 +252,7 @@ func nxOptiRoutine(server string, timeout time.Duration, retryTimeout time.Durat
 	res2.qmin_mode = false
 	res2.induction = false
 	res2.nxcheck = true
+	res2.ResolverType = resolver.resolver_type
 	if res2.status != 4 && res2.status != 0 {
 		res.nxopti = -1
 		ch <- res
@@ -261,7 +269,7 @@ func nxOptiRoutine(server string, timeout time.Duration, retryTimeout time.Durat
 	ch <- res2
 }
 
-func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int, timeout time.Duration, retryTrimeout time.Duration) *TempStore {
+func scanResolvers(resolver []Resolver, tokenDepth int, rounds int, batchSize int, timeout time.Duration, retryTrimeout time.Duration) *TempStore {
 
 	parts := partitionStringSlice(resolver, batchSize)
 
@@ -277,15 +285,15 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 			ch := make(chan QueryResult)
 			var wg sync.WaitGroup
 
-			for _, ip := range part {
+			for _, resolver := range part {
 				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false)
+				go dnsQueryRoutine(tokenDepth, resolver, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false)
 				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
+				go dnsQueryRoutine(tokenDepth, resolver, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
 				wg.Add(1)
-				go dnsQueryRoutine(tokenDepth, ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
+				go dnsQueryRoutine(tokenDepth, resolver, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
 				wg.Add(1)
-				go nxOptiRoutine(ip, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)
+				go nxOptiRoutine(resolver, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)
 			}
 			go func() {
 				wg.Wait()
@@ -303,6 +311,7 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 					ModeCheck:        v.qmin_mode,
 					NxOptimization:   v.nxopti,
 					NXCheck:          v.nxcheck,
+					ResolverType:     v.ResolverType,
 				}
 				tempDataFile.WriteSingle(resLine)
 			}
@@ -316,7 +325,12 @@ func scanResolvers(resolver []string, tokenDepth int, rounds int, batchSize int,
 	return tempDataFile
 }
 
-func readCSV(path string) []string {
+type Resolver struct {
+	ip            string
+	resolver_type string
+}
+
+func readCSV(path string) []Resolver {
 	file, err := os.Open(path)
 	if err != nil {
 		log.Fatalln("Couldn't open CSV file: ", err.Error())
@@ -324,14 +338,14 @@ func readCSV(path string) []string {
 	reader := csv.NewReader(file)
 	records, _ := reader.ReadAll()
 
-	var ips = []string{}
+	var ips = []Resolver{}
 	if records[0][1] == "queried_ip" || records[0][1] == "ip_request" {
 		for _, record := range records[1:] {
-			ips = append(ips, record[1])
+			ips = append(ips, Resolver{ip: record[1], resolver_type: record[5]})
 		}
 	} else if records[0][0] == "resolverIP" {
 		for _, record := range records[1:] {
-			ips = append(ips, record[0])
+			ips = append(ips, Resolver{ip: record[0], resolver_type: ""})
 		}
 	}
 	file.Close()
@@ -352,13 +366,13 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	start := time.Now()
 	stats.Start = start
 
-	var server []string
+	var server []Resolver
 
 	// user can input ether one single ip or a csv file containing multiple
 	// default is the csv file
 	if inputIsResolver {
 		// TODO: check for valid ip address
-		server = []string{inArg}
+		server = []Resolver{{ip: inArg, resolver_type: "Unset"}}
 	} else {
 		if _, err := os.Stat(inArg); os.IsNotExist(err) {
 			log.Fatalln("File not Found")
