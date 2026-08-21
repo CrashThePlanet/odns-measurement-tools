@@ -20,6 +20,7 @@ output_selenium/
 *.json
 keys.py
 *.parquet
+*.mmdb
 
 src/data/raw/qmin/*
 !src/data/raw/qmin/.gitkeep
@@ -28,3 +29,4 @@ src/data/processed/qmin/*
 !src/data/processed/qmin/.gitkeep
 src/notebook/qmin/*.html
 src/notebook/qmin/*.png
+*.zip

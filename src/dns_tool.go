@@ -4,6 +4,7 @@ import (
 	"dns_tools/common"
 	scanner_config "dns_tools/config"
 	"dns_tools/logging"
+	"dns_tools/postprocessing/qmin"
 	qmin_dnsserver "dns_tools/qmin/dns_server"
 	qmin_scanner "dns_tools/qmin/scanner"
 	"dns_tools/ratelimit"
@@ -15,6 +16,8 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
+
+	_ "github.com/marcboeker/go-duckdb"
 )
 
 var cpu_file *os.File
@@ -363,6 +366,54 @@ func (pwc *QMINScannerParquetWriterCommand) Run() (error, int) {
 	return nil, 0
 }
 
+type QMINScannerPostProcCommand struct {
+	SubCommand
+	outputPath        string
+	recursive         bool
+	recursive_alias   bool
+	stat_flag         bool
+	help_flag         bool
+	resolver_matching bool
+}
+
+func NewQMINScannerPostProcCommand() *QMINScannerPostProcCommand {
+	ppc := &QMINScannerPostProcCommand{
+		SubCommand: SubCommand{
+			fs:          flag.NewFlagSet("qmin_post_proc", flag.ContinueOnError),
+			description: "Prostprocessing QMIN Scanner result file(s)",
+		},
+	}
+	ppc.fs.BoolVar(&ppc.help_flag, "help", false, "Display help")
+	ppc.fs.BoolVar(&ppc.recursive, "recursive", false, "search subdirectories and combine - WIP")
+	ppc.fs.BoolVar(&ppc.recursive_alias, "r", false, "alias for --recursive - WIP")
+	ppc.fs.StringVar(&ppc.outputPath, "out", "", "Path were the ouput files should be sved")
+	ppc.fs.BoolVar(&ppc.stat_flag, "stat", false, "Produce and save statistics file - WIP")
+	ppc.fs.BoolVar(&ppc.resolver_matching, "resolverMatch", false, "Matches observed pattern against known pattern produced by OpenSource resolver software. Only works with labelDepth=24 and a two label base Domain")
+	return ppc
+}
+
+func (ppc *QMINScannerPostProcCommand) Run() (error, int) {
+	if ppc.help_flag {
+		fmt.Println("This module allows the postprocessing of one or more scan. Provide the path to the directory containing the metadata.json as well as the result.parquet file")
+		fmt.Println("Optionally you can also provide the path to a folder containing multiple such result folders and the recursive flas to combine all outputs.")
+		ppc.fs.Usage()
+		return nil, 0
+	}
+	if ppc.recursive_alias {
+		ppc.recursive = ppc.recursive_alias
+	}
+	if len(ppc.fs.Args()) == 0 {
+		return fmt.Errorf("Path is missing"), int(common.WRONG_INPUT_ARGS)
+	}
+	if _, err := os.Stat(ppc.fs.Args()[0]); os.IsNotExist(err) {
+		return fmt.Errorf("File not Found"), int(common.WRONG_INPUT_ARGS)
+	}
+
+	qmin.StartPostProcessing(ppc.fs.Args()[0], ppc.recursive, ppc.outputPath, ppc.stat_flag, ppc.resolver_matching)
+
+	return nil, 0
+}
+
 func base(args []string) (error, int) {
 	if len(args) < 1 {
 		return fmt.Errorf("You must choose what to do!"), int(common.WRONG_INPUT_ARGS)
@@ -373,6 +424,7 @@ func base(args []string) (error, int) {
 		NewQMinServerCommand(),
 		NewQMinScannerCommand(),
 		NewQMINScannerParquetWriterCommand(),
+		NewQMINScannerPostProcCommand(),
 	}
 
 	if args[0] == "help" {
