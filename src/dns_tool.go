@@ -18,6 +18,8 @@ import (
 	"runtime/pprof"
 
 	_ "github.com/marcboeker/go-duckdb"
+
+	_ "net/http/pprof"
 )
 
 var cpu_file *os.File
@@ -445,6 +447,7 @@ func base(args []string) (error, int) {
 }
 
 func main() {
+
 	if err, code := base(os.Args[1:]); err != nil {
 		fmt.Println(err)
 		os.Exit(code)

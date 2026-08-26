@@ -3,7 +3,6 @@ package qmin_dnsserver
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"maps"
 	"slices"
@@ -130,7 +129,16 @@ func updateProbeEntry(tokenLength int, probeSeq []string, tokenSeq string, token
 
 // handle incoming dns request
 func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.ResponseWriter, *dns.Msg) {
-	m := r.Copy()
+	m := &dns.Msg{
+		MsgHeader: dns.MsgHeader{
+			ID:                 r.ID,
+			Response:           true,
+			Authoritative:      true,
+			RecursionDesired:   r.RecursionDesired,
+			RecursionAvailable: false,
+		},
+		Question: r.Question,
+	}
 	dnsutil.SetReply(m, r)
 	m.Authoritative = true
 
@@ -138,6 +146,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// catch requests that target predefined records
 	if slices.Contains(slices.Collect(maps.Keys(s.resource_records)), requestedDomain) {
+		fmt.Println("testtststst")
 		record := s.resource_records[requestedDomain]
 		if dns.RRToType(r.Question[0]) == dns.StringToType[record.qtype] {
 			rr, err := dns.New(fmt.Sprintf("%s 3600 IN %s %s", r.Question[0].Header().Name, record.qtype, record.value))
@@ -303,12 +312,9 @@ func (s *QminDnsServer) responder(ctx context.Context, w dns.ResponseWriter, r *
 	var m *dns.Msg
 	w, m = s.requestResponse(w, r)
 
-	m.Pack()
-
-	if _, err := io.Copy(w, m); err != nil {
+	if _, err := m.WriteTo(w); err != nil {
 		log.Fatalf("Write error: %v", err.Error())
 	}
-	w.Close()
 }
 
 func (s *QminDnsServer) Start_server() {
