@@ -1,7 +1,9 @@
 package qmin_dnsserver
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"log"
 	"maps"
 	"slices"
@@ -10,7 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miekg/dns"
+	"codeberg.org/miekg/dns"
+	"codeberg.org/miekg/dns/dnsutil"
+	"codeberg.org/miekg/dns/rdata"
+	// dnsv1 "github.com/miekg/dns"
 )
 
 var lastClean time.Time
@@ -125,17 +130,22 @@ func updateProbeEntry(tokenLength int, probeSeq []string, tokenSeq string, token
 
 // handle incoming dns request
 func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.ResponseWriter, *dns.Msg) {
-	m := new(dns.Msg)
-	m.SetReply(r)
+	m := r.Copy()
+	dnsutil.SetReply(m, r)
 	m.Authoritative = true
 
-	requestedDomain := strings.ToLower(r.Question[0].Name)
+	requestedDomain := strings.ToLower(r.Question[0].Header().Name)
 
 	// catch requests that target predefined records
 	if slices.Contains(slices.Collect(maps.Keys(s.resource_records)), requestedDomain) {
 		record := s.resource_records[requestedDomain]
-		if r.Question[0].Qtype == dns.StringToType[record.qtype] {
-			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN %s %s", r.Question[0].Name, record.qtype, record.value))
+		if dns.RRToType(r.Question[0]) == dns.StringToType[record.qtype] {
+			rr, err := dns.New(fmt.Sprintf("%s 3600 IN %s %s", r.Question[0].Header().Name, record.qtype, record.value))
+			if err != nil {
+				fmt.Println("Error while creating RR %w", err)
+				m.Rcode = dns.RcodeServerFailure
+				return w, m
+			}
 			m.Answer = append(m.Answer, rr)
 			return w, m
 		}
@@ -149,7 +159,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// check if requested Domain is longer than base domain and ends in the base domain
 	if len(requestedDomain) <= len(s.baseURL) || requestedDomain[len(requestedDomain)-len(s.baseURL):] != s.baseURL {
-		m.SetRcode(r, dns.RcodeNameError)
+		m.Rcode = dns.RcodeNameError
 		return w, m
 	}
 
@@ -161,14 +171,14 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// TODO: check for valid id token
 	if len(idToken) < 10 {
-		m.SetRcode(r, dns.RcodeRefused)
+		m.Rcode = dns.RcodeRefused
 		return w, m
 	}
 
 	probeMetaData := strings.Split(idToken, "-")
 	//  every valid id token hast at least 3 parts (IP in hex, token depth, nonce)
 	if len(probeMetaData) < 3 {
-		m.SetRcode(r, dns.RcodeNameError)
+		m.Rcode = dns.RcodeNameError
 		return w, m
 	}
 
@@ -181,7 +191,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		// the seperator is the underscore "_"
 		// the scanner should not create domains with an underscore in them
 
-		updatedSeq, tokenNum, extended := updateProbeEntry(probe.tokenLength, probe.tokenSequence, tokenSeq, tokens, r.Question[0].Qtype)
+		updatedSeq, tokenNum, extended := updateProbeEntry(probe.tokenLength, probe.tokenSequence, tokenSeq, tokens, dns.RRToType(r.Question[0]))
 		probe.tokenSequence = updatedSeq
 		if extended {
 			probe.currTokenNum = tokenNum
@@ -190,7 +200,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	} else if p, ok := probes[idToken+"-induction"]; ok {
 
-		updatedInductionSeq, tokenNum, extended := updateProbeEntry(probe.tokenLength, p.inductionProbe.tokenSequence, tokenSeq, tokens, r.Question[0].Qtype)
+		updatedInductionSeq, tokenNum, extended := updateProbeEntry(probe.tokenLength, p.inductionProbe.tokenSequence, tokenSeq, tokens, dns.RRToType(r.Question[0]))
 		p.inductionProbe.tokenSequence = updatedInductionSeq
 		if extended {
 			p.inductionProbe.currTokenNum = tokenNum
@@ -211,7 +221,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		probe = probeData{
 			tokenLength:      int(tokenLen),
 			lastSeen:         time.Now(),
-			tokenSequence:    []string{tokenSeq + "_" + dns.TypeToString[r.Question[0].Qtype]},
+			tokenSequence:    []string{tokenSeq + "_" + dns.TypeToString[dns.RRToType(r.Question[0])]},
 			currTokenNum:     len(tokens),
 			incomingResolver: strings.Split(w.RemoteAddr().String(), ":")[0], // RemoteAddr() contains IP and Port --> remove port
 			induction:        len(probeMetaData) > 3 && probeMetaData[3] == "induction",
@@ -226,41 +236,62 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// if this request was the last (determained by the provied depth inside the ID label) we return a TXT response containing the pattern and the ip of requesting server
 	// (ip of requested and requesting server can differ -> forwarder)
-	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength && r.Question[0].Qtype == dns.TypeTXT {
-		rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+probe.inductionProbe.resolver+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
+	if probe.induction && probe.inductionProbe.currTokenNum == probe.tokenLength && dns.RRToType(r.Question[0]) == dns.TypeTXT {
+		rr, err := dns.New(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Header().Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+","+probe.inductionProbe.resolver+","+strings.Join(probe.inductionProbe.tokenSequence, "|")))
+		if err != nil {
+			fmt.Println("Error while creating RR %w", err)
+			m.Rcode = dns.RcodeServerFailure
+			return w, m
+		}
 		m.Answer = append(m.Answer, rr)
 		return w, m
 	} else if len(probeMetaData) > 3 && probeMetaData[3] == "nxopti" {
-		if r.Question[0].Name[0] == 'b' {
-			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, "false,,,"))
+		if r.Question[0].Header().Name[0] == 'b' {
+			rr, err := dns.New(fmt.Sprintf("%s 3600 IN TXT \"%s\"", dns.TypeToString[dns.RRToType(r.Question[0])], "false,,,"))
+			if err != nil {
+				fmt.Println("Error while creating RR %w", err)
+				m.Rcode = dns.RcodeServerFailure
+				return w, m
+			}
 			m.Answer = append(m.Answer, rr)
 		} else {
-			m.SetRcode(r, dns.RcodeNameError)
+			m.Rcode = dns.RcodeNameError
 		}
 		return w, m
 	} else if probe.currTokenNum == probe.tokenLength {
 		if len(probeMetaData) > 3 && probeMetaData[3] == "induction" {
-			rr := new(dns.CNAME)
-			rr.Hdr = dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 3600}
 
 			var domain string
 			for i := probe.tokenLength - 1; i > 0; i-- {
 				domain += strconv.Itoa(i) + "."
 			}
-			rr.Target = domain + strings.Join(probeMetaData[:3], "-") + "." + s.baseURL
+			rr := &dns.CNAME{
+				Hdr:   dns.Header{Name: r.Question[0].Header().Name, Class: dns.ClassINET, TTL: 3600},
+				CNAME: rdata.CNAME{Target: domain + strings.Join(probeMetaData[:3], "-") + "." + s.baseURL},
+			}
 			m.Answer = append(m.Answer, rr)
-		} else if r.Question[0].Qtype == dns.TypeTXT {
-			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+",NULL,NULL"))
+		} else if dns.RRToType(r.Question[0]) == dns.TypeTXT {
+			rr, err := dns.New(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Header().Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+",NULL,NULL"))
+			if err != nil {
+				fmt.Println("Error while creating RR %w", err)
+				m.Rcode = dns.RcodeServerFailure
+				return w, m
+			}
 			m.Answer = append(m.Answer, rr)
 		}
 	} else {
 		if len(probeMetaData) > 3 && probeMetaData[3] == "qminmode" {
-			m.SetRcode(r, dns.RcodeNameError)
+			m.Rcode = dns.RcodeNameError
 			return w, m
 		} else {
 			// if there are still new reuqests expected we return an NS record pointing to this server
-			// rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN A %s", r.Question[0].Name, s.ip))
-			rr, _ := dns.NewRR(fmt.Sprintf("%s 3600 IN NS %s", r.Question[0].Name, "ns1.tilhempel.info."))
+			// rr, _ := dnsv1.NewRR(fmt.Sprintf("%s 3600 IN A %s", r.Question[0].Name, s.ip))
+			rr, err := dns.New(fmt.Sprintf("%s 3600 IN NS %s", r.Question[0].Header().Name, "ns1.tilhempel.info."))
+			if err != nil {
+				fmt.Println("Error while creating RR %w", err)
+				m.Rcode = dns.RcodeServerFailure
+				return w, m
+			}
 			m.Answer = append(m.Answer, rr)
 		}
 
@@ -268,11 +299,13 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	return w, m
 }
 
-func (s *QminDnsServer) responder(w dns.ResponseWriter, r *dns.Msg) {
+func (s *QminDnsServer) responder(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) {
 	var m *dns.Msg
 	w, m = s.requestResponse(w, r)
 
-	if err := w.WriteMsg(m); err != nil {
+	m.Pack()
+
+	if _, err := io.Copy(w, m); err != nil {
 		log.Fatalf("Write error: %v", err.Error())
 	}
 	w.Close()
@@ -295,10 +328,10 @@ func (s *QminDnsServer) Start_server() {
 			value: rec["value"],
 		}
 	}
-
 	dns.HandleFunc(".", s.responder)
 	go s.cleanProbes()
 	server := &dns.Server{Addr: s.addr + ":" + strconv.Itoa(s.port), Net: Cfg.Protocol}
+
 	fmt.Println("DNS server listining on:", s.addr, ":", s.port, ";Protocol:", Cfg.Protocol)
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Server failed: %v", err)
