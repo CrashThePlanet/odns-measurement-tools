@@ -1,9 +1,7 @@
 package qmin
 
 import (
-	"database/sql"
 	qmin_scanner "dns_tools/qmin/scanner"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -397,7 +395,7 @@ func getMetadataFromFile(path string) (*Metadata, error) {
 }
 
 // process a single results.parquet file
-func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[string]ScanResolverPair, dbASN *maxminddb.Reader, dbLoc *maxminddb.Reader, pattern_matching bool) (startTime string) {
+func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[string]ScanResolverPair, dbASN *maxminddb.Reader, dbLoc *maxminddb.Reader, pattern_matching bool) {
 
 	file, err := os.Open(dirPath + "/result.parquet")
 	if err != nil {
@@ -412,7 +410,6 @@ func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[st
 	if err != nil {
 		log.Fatalln(err)
 	}
-	startTime = metadata.Start
 
 	reader := parquet.NewGenericReader[qmin_scanner.ParquetQueryResult](file)
 	defer reader.Close()
@@ -445,87 +442,6 @@ func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[st
 		}
 	}
 	return
-}
-
-func openDuckDB() (*sql.DB, error) {
-	db, err := sql.Open("duckdb", "")
-	if err != nil {
-		return nil, fmt.Errorf("Could not open duckdb: %w", err)
-	}
-	_, err = db.Exec("INSTALL parquet;")
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("Could not install parquet extension: %w", err)
-	}
-	_, err = db.Exec("LOAD parquet;")
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("Could not load parquet extension: %w", err)
-	}
-	return db, nil
-}
-
-type queryStat struct {
-	resolver_type string  `db:"resolver_type"`
-	qmin_enabled  TriBool `db:"qmin_enabled"`
-	count         int     `db:"COUNT"`
-}
-type scanStat struct {
-}
-
-func generateStatistics(filePath string, outputPath string, scanStart string) error {
-	db, err := openDuckDB()
-	if err != nil {
-		log.Fatalln("Failed to generate statistics: ", err)
-	}
-	defer db.Close()
-
-	rows, err := db.Query("SELECT resolver_type, qmin_enabled, COUNT(*) as COUNT FROM read_parquet('" + filePath + "') GROUP BY resolver_type, qmin_enabled;")
-	if err != nil {
-		return fmt.Errorf("COuld not run query against parquet file: %w", err)
-	}
-	var stat queryStat
-	stats := make(map[TriBool]int)
-	defer rows.Close()
-
-	for rows.Next() {
-		err := rows.Scan(&stat.qmin_enabled, &stat.count)
-		if err != nil {
-			return fmt.Errorf("Error reading row: %w", err)
-		}
-		stats[stat.qmin_enabled] = stat.count
-	}
-	err = rows.Err()
-	if err != nil {
-		return fmt.Errorf("Error during row iteration: %w", err)
-	}
-	err = createStatCSV(stats, outputPath, scanStart)
-	return err
-}
-func createStatCSV(stats map[TriBool]int, outPath string, scanStart string) error {
-	f, err := os.Create(outPath + "/stats.csv")
-	if err != nil {
-		return fmt.Errorf("Failed to create statistics csv file: %w", err)
-	}
-	writer := csv.NewWriter(f)
-	defer f.Close()
-	stat := [][]string{
-		{scanStart, strconv.Itoa(stats[TriBool(Nil)]), strconv.Itoa(stats[TriBool(False)]), strconv.Itoa(stats[TriBool(True)]), strconv.Itoa(stats[TriBool(Uncertain)])},
-	}
-	header := []string{"scanStartTime", "noAnswer", "noQMIN", "QMIN", "Ambiguous"}
-	err = writer.Write(header)
-	if err != nil {
-		return fmt.Errorf("Could not write stats to file: %w", err)
-	}
-	err = writer.Write(stat[0])
-	if err != nil {
-		return fmt.Errorf("Could not write stats to file: %w", err)
-	}
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		return fmt.Errorf("%w", err)
-	}
-	return nil
 }
 
 // main function of this module
@@ -564,7 +480,7 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, stat 
 	resolver1 := make(map[string]ScanResultResolver)
 	resolver2 := make(map[string]ScanResolverPair)
 
-	scanStart := processFile(inputPath, resolver1, resolver2, dbASN, dbCountry, pattern_matching)
+	processFile(inputPath, resolver1, resolver2, dbASN, dbCountry, pattern_matching)
 	/*
 		dirs, err := os.ReadDir(inputPath)
 		if err != nil {
@@ -580,12 +496,5 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, stat 
 
 	if err := parquet.WriteFile(outputPath+fileName+"/test2.parquet", slices.Collect(maps.Values(resolver2))); err != nil {
 		log.Fatalln("Error writing output Parquet file 2: ", err.Error())
-	}
-
-	if stat {
-		err := generateStatistics(outputPath+fileName+"/test1.parquet", outputPath+fileName, scanStart)
-		if err != nil {
-			log.Fatalln(err)
-		}
 	}
 }
