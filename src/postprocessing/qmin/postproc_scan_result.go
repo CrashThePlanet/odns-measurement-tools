@@ -397,7 +397,7 @@ func getMetadataFromFile(path string) (*Metadata, error) {
 }
 
 // process a single results.parquet file
-func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[string]ScanResolverPair, dbASN *maxminddb.Reader, dbLoc *maxminddb.Reader, pattern_matching bool) {
+func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[string]ScanResolverPair, dbASN *maxminddb.Reader, dbLoc *maxminddb.Reader, pattern_matching bool) *Metadata {
 
 	file, err := os.Open(dirPath + "/result.parquet")
 	if err != nil {
@@ -443,6 +443,7 @@ func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[st
 			}
 		}
 	}
+	return metadata
 }
 
 type dirData struct {
@@ -473,7 +474,7 @@ func getValidInputDirectories(basePath string) ([]dirData, error) {
 	return directories, nil
 }
 
-func startFileProcessing(inputPath string, outputPath string, dbASN *maxminddb.Reader, dbCountry *maxminddb.Reader, pattern_matching bool, recursive bool, combine bool) {
+func startFileProcessing(inputPath string, outputPath string, dbASN *maxminddb.Reader, dbCountry *maxminddb.Reader, pattern_matching bool, combine bool) {
 	// these will hold the processed data
 	resolver1 := make(map[string]ScanResultResolver)
 	resolver2 := make(map[string]ScanResolverPair)
@@ -498,7 +499,14 @@ func startFileProcessing(inputPath string, outputPath string, dbASN *maxminddb.R
 			return
 		}
 		fmt.Println("Now processing: ", inputPath)
-		processFile(inputPath, resolver1, resolver2, dbASN, dbCountry, pattern_matching)
+		m := processFile(inputPath, resolver1, resolver2, dbASN, dbCountry, pattern_matching)
+		// writing metadata of scan to output directory
+		metadataJSON, err := json.Marshal(m)
+		if err != nil {
+			log.Println("Could not convert metadata to struct: skipping")
+		} else {
+			os.WriteFile(outputPath+"/scan_metadata.json", metadataJSON, 0644)
+		}
 	}
 
 	if err := parquet.WriteFile(outputPath+"/test1.parquet", slices.Collect(maps.Values(resolver1))); err != nil {
@@ -525,12 +533,12 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, patte
 	// open the maxmind DBs for IP enrichment
 	dbASN, err := maxminddb.Open("data/external/GeoLite2-ASN.mmdb")
 	if err != nil {
-		log.Fatalln("Couln't open ASN DB: ", err.Error())
+		log.Fatalln("Couldn't open ASN DB: ", err.Error())
 	}
 	defer dbASN.Close()
 	dbCountry, err := maxminddb.Open("data/external/GeoLite2-Country.mmdb")
 	if err != nil {
-		log.Fatalln("Couln't open Country DB: ", err.Error())
+		log.Fatalln("Couldn't open Country DB: ", err.Error())
 	}
 	defer dbCountry.Close()
 
@@ -557,12 +565,12 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, patte
 			}
 			tmp := outputPath + fileName + "/" + dir.info.Name()
 			os.Mkdir(tmp, dirStat.Mode().Perm())
-			startFileProcessing(dir.path, tmp, dbASN, dbCountry, pattern_matching, true, false)
+			startFileProcessing(dir.path, tmp, dbASN, dbCountry, pattern_matching, false)
 		}
 	} else if combine {
-		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, true, true)
+		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, true)
 	} else {
-		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, false, false)
+		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, false)
 	}
 
 }
