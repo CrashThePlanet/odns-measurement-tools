@@ -3,12 +3,14 @@ package qmin
 import (
 	qmin_scanner "dns_tools/qmin/scanner"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"maps"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -441,11 +443,75 @@ func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[st
 			}
 		}
 	}
-	return
+}
+
+type dirData struct {
+	path string
+	info os.DirEntry
+}
+
+func getValidInputDirectories(basePath string) ([]dirData, error) {
+	directories := []dirData{}
+
+	err := filepath.WalkDir(basePath, func(path string, info os.DirEntry, err error) error {
+		if !info.IsDir() {
+			return nil
+		}
+		if _, err := os.Stat(path + "/result.parquet"); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if _, err := os.Stat(path + "/metadata.json"); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		directories = append(directories, dirData{path, info})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get subdirectories: %w", err)
+	}
+
+	return directories, nil
+}
+
+func startFileProcessing(inputPath string, outputPath string, dbASN *maxminddb.Reader, dbCountry *maxminddb.Reader, pattern_matching bool, recursive bool, combine bool) {
+	// these will hold the processed data
+	resolver1 := make(map[string]ScanResultResolver)
+	resolver2 := make(map[string]ScanResolverPair)
+
+	if combine {
+		dirs, err := getValidInputDirectories(inputPath)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		for _, dir := range dirs {
+			fmt.Println("Now processing: ", dir.path)
+			processFile(dir.path, resolver1, resolver2, dbASN, dbCountry, pattern_matching)
+		}
+	} else {
+		if _, err := os.Stat(inputPath + "/result.parquet"); errors.Is(err, os.ErrNotExist) {
+			fmt.Println("results.parquet file doesnt exists in \"" + inputPath + "\" (skipping)")
+			return
+		}
+		if _, err := os.Stat(inputPath + "/metadata.json"); errors.Is(err, os.ErrNotExist) {
+			fmt.Println("metadata.json file doesnt exists in \"" + inputPath + "\" (skipping)")
+			return
+		}
+		fmt.Println("Now processing: ", inputPath)
+		processFile(inputPath, resolver1, resolver2, dbASN, dbCountry, pattern_matching)
+	}
+
+	if err := parquet.WriteFile(outputPath+"/test1.parquet", slices.Collect(maps.Values(resolver1))); err != nil {
+		log.Fatalln("Error writing output Parquet file 1: ", err.Error())
+	}
+
+	if err := parquet.WriteFile(outputPath+"/test2.parquet", slices.Collect(maps.Values(resolver2))); err != nil {
+		log.Fatalln("Error writing output Parquet file 2: ", err.Error())
+	}
 }
 
 // main function of this module
-func StartPostProcessing(inputPath string, recursive bool, outpath string, stat bool, pattern_matching bool) {
+func StartPostProcessing(inputPath string, recursive bool, outpath string, pattern_matching bool, combine bool) {
 	// default path/home/Til/Documents/Uni/bachelors/odns-measurement-tools/src/data/processed/qmin/2026-08-22_14-17/test1.parquet
 	outputPath := "./data/processed/qmin/"
 	// change if user set path
@@ -455,14 +521,6 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, stat 
 			outputPath += "/"
 		}
 	}
-	fileName := time.Now().Local().Format("2006-01-02_15-04")
-
-	// check if the ouput path can be accessed and create new directory
-	dirStat, err := os.Stat(outputPath)
-	if err != nil {
-		log.Fatalln("Couldn't access output directory:", err.Error())
-	}
-	os.Mkdir(outputPath+fileName, dirStat.Mode().Perm())
 
 	// open the maxmind DBs for IP enrichment
 	dbASN, err := maxminddb.Open("data/external/GeoLite2-ASN.mmdb")
@@ -476,25 +534,35 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, stat 
 	}
 	defer dbCountry.Close()
 
-	// these will hold the processed data
-	resolver1 := make(map[string]ScanResultResolver)
-	resolver2 := make(map[string]ScanResolverPair)
+	fileName := time.Now().Local().Format("2006-01-02_15-04")
+	// check if the ouput path can be accessed and create new directory
+	dirStat, err := os.Stat(outputPath)
+	if err != nil {
+		log.Fatalln("Couldn't access output directory:", err.Error())
+	}
+	os.Mkdir(outputPath+fileName, dirStat.Mode().Perm())
 
-	processFile(inputPath, resolver1, resolver2, dbASN, dbCountry, pattern_matching)
-	/*
-		dirs, err := os.ReadDir(inputPath)
+	if recursive && !combine {
+		dirs, err := getValidInputDirectories(inputPath)
 		if err != nil {
-			log.Fatalln("err walking directory: ", err.Error())
+			dbASN.Close()
+			dbCountry.Close()
+			log.Fatal(err)
 		}
+		fmt.Println(dirs)
 		for _, dir := range dirs {
-		}*/
-	// write both files
-
-	if err := parquet.WriteFile(outputPath+fileName+"/test1.parquet", slices.Collect(maps.Values(resolver1))); err != nil {
-		log.Fatalln("Error writing output Parquet file 1: ", err.Error())
+			dirStat, err := os.Stat(outputPath)
+			if err != nil {
+				log.Fatalln("Couldn't access output directory:", err.Error())
+			}
+			tmp := outputPath + fileName + "/" + dir.info.Name()
+			os.Mkdir(tmp, dirStat.Mode().Perm())
+			startFileProcessing(dir.path, tmp, dbASN, dbCountry, pattern_matching, true, false)
+		}
+	} else if combine {
+		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, true, true)
+	} else {
+		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, false, false)
 	}
 
-	if err := parquet.WriteFile(outputPath+fileName+"/test2.parquet", slices.Collect(maps.Values(resolver2))); err != nil {
-		log.Fatalln("Error writing output Parquet file 2: ", err.Error())
-	}
 }

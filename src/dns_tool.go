@@ -376,6 +376,7 @@ type QMINScannerPostProcCommand struct {
 	stat_flag         bool
 	help_flag         bool
 	resolver_matching bool
+	combine_flag      bool
 }
 
 func NewQMINScannerPostProcCommand() *QMINScannerPostProcCommand {
@@ -388,9 +389,9 @@ func NewQMINScannerPostProcCommand() *QMINScannerPostProcCommand {
 	ppc.fs.BoolVar(&ppc.help_flag, "help", false, "Display help")
 	ppc.fs.BoolVar(&ppc.recursive, "recursive", false, "search subdirectories and combine - WIP")
 	ppc.fs.BoolVar(&ppc.recursive_alias, "r", false, "alias for --recursive - WIP")
-	ppc.fs.StringVar(&ppc.outputPath, "out", "", "Path were the ouput files should be sved")
-	ppc.fs.BoolVar(&ppc.stat_flag, "stat", false, "Produce and save statistics file - WIP")
+	ppc.fs.StringVar(&ppc.outputPath, "out", "", "Path were the ouput files should be saved")
 	ppc.fs.BoolVar(&ppc.resolver_matching, "resolverMatch", false, "Matches observed pattern against known pattern produced by OpenSource resolver software. Only works with labelDepth=24 and a two label base Domain")
+	ppc.fs.BoolVar(&ppc.combine_flag, "combine", false, "Processes all input files into one output set; need to set -recursive")
 	return ppc
 }
 
@@ -410,8 +411,11 @@ func (ppc *QMINScannerPostProcCommand) Run() (error, int) {
 	if _, err := os.Stat(ppc.fs.Args()[0]); os.IsNotExist(err) {
 		return fmt.Errorf("File not Found"), int(common.WRONG_INPUT_ARGS)
 	}
+	if ppc.combine_flag && !ppc.recursive {
+		return fmt.Errorf("In order to use the 'combine' flag, the 'recursive' flag needs to be set."), int(common.WRONG_INPUT_ARGS)
+	}
 
-	qmin.StartPostProcessing(ppc.fs.Args()[0], ppc.recursive, ppc.outputPath, ppc.stat_flag, ppc.resolver_matching)
+	qmin.StartPostProcessing(ppc.fs.Args()[0], ppc.recursive, ppc.outputPath, ppc.resolver_matching, ppc.combine_flag)
 
 	return nil, 0
 }
