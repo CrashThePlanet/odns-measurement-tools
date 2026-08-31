@@ -557,7 +557,6 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, patte
 			dbCountry.Close()
 			log.Fatal(err)
 		}
-		fmt.Println(dirs)
 		for _, dir := range dirs {
 			dirStat, err := os.Stat(outputPath)
 			if err != nil {
