@@ -1,6 +1,7 @@
 package qmin_scanner
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -364,6 +366,45 @@ func readInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
 	return tempDataFile, nil
 }
 
+func readInputTXTAndScan(inputPath string, batchSize int) (*TempStore, error) {
+	tempDataFile, err := NewTempStore()
+	if err != nil {
+		return nil, fmt.Errorf("Could not create Temporary file: %w", err)
+	}
+	inputFile, err := os.Open(inputPath)
+	if err != nil {
+		return nil, fmt.Errorf("Could not Open input file: %w", err)
+	}
+	defer inputFile.Close()
+
+	scanner := bufio.NewScanner(inputFile)
+	batch := make([]InputFileFormat, 0, batchSize)
+
+	for scanner.Scan() {
+		t := scanner.Text()
+		ty := "unset"
+		batch = append(batch, InputFileFormat{Queried_ip: &t, Resolver_type: &ty})
+
+		if len(batch) == batchSize {
+			scanResolvers(batch, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
+			batch = batch[:0]
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading file: %w", err)
+	}
+	if len(batch) > 0 {
+		scanResolvers(batch, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
+	}
+
+	if err := tempDataFile.Close(); err != nil {
+		return tempDataFile, fmt.Errorf("Error while trying to close temporary file: %w", err)
+	}
+
+	return tempDataFile, nil
+}
+
 func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	stats := ScanStat{
 		Input:        inArg,
@@ -403,7 +444,17 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 		if _, err := os.Stat(inArg); os.IsNotExist(err) {
 			log.Fatalln("File not Found")
 		}
-		temp1, err := readInputAndScan(inArg, Cfg.BatchSize)
+		var temp1 *TempStore
+		var err error
+		switch filepath.Ext(inArg) {
+		case ".txt":
+			temp1, err = readInputTXTAndScan(inArg, Cfg.BatchSize)
+		case ".pq":
+		case ".parquet":
+			temp1, err = readInputAndScan(inArg, Cfg.BatchSize)
+		default:
+			log.Fatalln("Unsupported file extension")
+		}
 		if err != nil {
 			if temp1 != nil {
 				log.Println("Temporary file path: %w", temp.Path())
