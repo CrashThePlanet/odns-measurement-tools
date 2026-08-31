@@ -1,14 +1,19 @@
 package qmin_scanner
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log"
 	"math"
 	"math/rand"
+	"net"
+	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,11 +21,17 @@ import (
 	"time"
 
 	"codeberg.org/miekg/dns"
+	"codeberg.org/miekg/dns/dnshttp"
 	"github.com/parquet-go/parquet-go"
 )
 
 var baseDomain string
 var randMax int
+
+// we want the resolver inside the target domain (for identification and to further avoid collisions). For IPv4 and IPv6 we can simply encode to hex, as both have a fixed length.
+// But DoH DOmain are full domains and have an arbitrary length. If we encode to Hex to Base64 we run into the max character limit of domains name pretty fast.
+// Therefore we create a custom Hashfunction with hashmap and store said hashmap into a file anlongside the result
+var dohResolverHashMap map[string]string
 
 type ScanStat struct {
 	Start        time.Time
@@ -101,27 +112,42 @@ type InputFileFormat struct {
 var responsePattern = `^(?:[0-9]+(?:\.[0-9]+)*_[A-Za-z0-9]+\|)*[0-9]+(?:\.[0-9]+)*\.[0-9A-Fa-f]{8}-[0-9]+-[^-|_]+(?:-(?:inducation|qmin_mode|nxopti))?_[A-Za-z0-9]+$`
 var reg = regexp.MustCompile(responsePattern)
 
-func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode bool, nxopti bool) string {
-	octets := strings.Split(dnsServer, ".")
-	if len(octets) != 4 {
-		log.Fatalln("Please provide an correct IPv4 Adress: ", dnsServer)
+func targetToHex(target string) string {
+	if strings.Count(target, ":") > 1 {
+		log.Fatalln("IPv& not supported")
 	}
+
+	if net.ParseIP(target) != nil {
+		if Cfg.Protocol == "doh" {
+			log.Fatalln("Looks like you tried to used a (doH) domain but the scanner is configured for udp/tcp scanning.")
+		}
+		out := ""
+		octets := strings.Split(target, ".")
+		for _, oc := range octets {
+			ocInt, err := strconv.Atoi(oc)
+			if err != nil {
+				log.Fatalln("Please provide an correct IPv4 Adress: ", target)
+			}
+			if ocInt < 16 {
+				out += "0"
+			}
+			out += strconv.FormatInt(int64(ocInt), 16)
+		}
+		return out
+	} else {
+		if Cfg.Protocol != "doh" {
+			log.Fatalln("Looks like you tried to used an IP but the scanner is configured for DoH scanning.")
+		}
+		return fmt.Sprintf("%X", crc32.ChecksumIEEE([]byte(target)))
+	}
+}
+
+func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode bool, nxopti bool) string {
 	if induction && qmin_mode {
 		log.Fatalln("Only test for induced queries OR NX behaviour in one query!")
 	}
 
-	var idToken = ""
-
-	for _, oc := range octets {
-		ocInt, err := strconv.Atoi(oc)
-		if err != nil {
-			log.Fatalln("Please provide an correct IPv4 Adress: ", dnsServer)
-		}
-		if ocInt < 16 {
-			idToken += "0"
-		}
-		idToken += strconv.FormatInt(int64(ocInt), 16)
-	}
+	var idToken = targetToHex(dnsServer)
 
 	idToken += "-" + strconv.Itoa(tokenDepth) + "-"
 	idToken += strconv.Itoa(rand.Intn(randMax))
@@ -145,35 +171,69 @@ func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode 
 	return domain + "." + baseDomain
 }
 
+func evalCommError(err error, server string) QueryResult {
+	if strings.Contains(err.Error(), "i/o timeout") {
+		return QueryResult{resolverIP: server, requestingIP: "NONE", status: 3, Res: "timeout"}
+	}
+	if strings.Contains(err.Error(), "connection refused") {
+		return QueryResult{resolverIP: server, requestingIP: "NONE", status: 1, Res: "refused"}
+	}
+	if strings.Contains(err.Error(), "no route to host") {
+		return QueryResult{resolverIP: server, requestingIP: "NONE", status: 5, Res: "noRoute"}
+	}
+	fmt.Println(server, ": unhandled error: ", err)
+	return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+}
+
 func dnsQuery(domain string, server string, qType uint16, timeout time.Duration) QueryResult {
 	m := dns.NewMsg(domain, qType)
 	m.RecursionDesired = true
 
-	// increase UDP Buffer size
-	// some Resolver send too large packages
-	if Cfg.Protocol == "udp" {
-		m.UDPSize, m.Security = 4096, false
-	}
-	c := dns.NewClient()
-	c.ReadTimeout = timeout
-	c.WriteTimeout = timeout
+	var res *dns.Msg
+	var err error
 
-	res, _, err := c.Exchange(context.TODO(), m, Cfg.Protocol, server+":"+strconv.Itoa(Cfg.Port))
+	switch Cfg.Protocol {
+	case "udp", "tcp":
+		// increase UDP Buffer size
+		// some Resolver send too large packages
+		if Cfg.Protocol == "udp" {
+			m.UDPSize, m.Security = 4096, false
+		}
+		c := dns.NewClient()
+		c.ReadTimeout = timeout
+		c.WriteTimeout = timeout
+
+		res, _, err = c.Exchange(context.TODO(), m, Cfg.Protocol, server+":"+strconv.Itoa(Cfg.Port))
+	case "doh":
+		if !strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://") {
+			server = "https://" + server
+		}
+		req, err := dnshttp.NewRequest(http.MethodPost, server, m)
+		if err != nil {
+			log.Fatalln("Request build error:", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return evalCommError(err, server)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "http status: " + strconv.Itoa(resp.StatusCode)}
+		}
+
+		res, err = dnshttp.Response(resp)
+		if err != nil {
+			fmt.Println("Failed to parse HTTP response:", err)
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+		}
+	default:
+		log.Fatalln("Wrong or unsupported protocol:", Cfg.Protocol)
+	}
 
 	if err != nil {
-		if strings.Contains(err.Error(), "i/o timeout") {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 3, Res: "timeout"}
-		}
-		if strings.Contains(err.Error(), "connection refused") {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 1, Res: "refused"}
-		}
-		if strings.Contains(err.Error(), "no route to host") {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 5, Res: "noRoute"}
-		}
-		fmt.Println(server, ": unhandled error: ", err)
-		return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+		return evalCommError(err, server)
 	}
-
 	if res.Rcode != dns.RcodeSuccess {
 		switch res.Rcode {
 		case dns.RcodeServerFailure:
@@ -322,7 +382,7 @@ func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth i
 	}
 }
 
-func readInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
+func readParquetInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
 	tempDataFile, err := NewTempStore()
 	if err != nil {
 		return nil, fmt.Errorf("Could not create Temporary file: %w", err)
@@ -364,6 +424,44 @@ func readInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
 	return tempDataFile, nil
 }
 
+func readTxtInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
+	tempDataFile, err := NewTempStore()
+	if err != nil {
+		return nil, fmt.Errorf("Could not create Temporary file: %w", err)
+	}
+	inputFile, err := os.Open(inputPath)
+	if err != nil {
+		return nil, fmt.Errorf("Could not Open input file: %w", err)
+	}
+	defer inputFile.Close()
+
+	buf := make([]InputFileFormat, 0, batchSize)
+	scanner := bufio.NewScanner(inputFile)
+
+	partIndex := 1
+	for scanner.Scan() {
+		res := scanner.Text()
+		t := "Unset"
+		buf = append(buf, InputFileFormat{Queried_ip: &res, Resolver_type: &t})
+
+		if len(buf) == batchSize {
+			log.Println("Part", partIndex)
+			scanResolvers(buf, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
+
+			buf = buf[:0]
+		}
+	}
+
+	if len(buf) > 0 {
+		scanResolvers(buf, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
+	}
+
+	if err := scanner.Err(); err != nil {
+		return tempDataFile, fmt.Errorf("Error while reading input file: %w", err)
+	}
+	return tempDataFile, nil
+}
+
 func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	stats := ScanStat{
 		Input:        inArg,
@@ -381,7 +479,7 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	baseDomain = Cfg.BaseURL
 	randMax = Cfg.RandMax
 
-	// var server []Resolver
+	dohResolverHashMap = make(map[string]string)
 
 	var temp *TempStore
 	// user can input ether one single ip or a csv file containing multiple
@@ -403,7 +501,17 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 		if _, err := os.Stat(inArg); os.IsNotExist(err) {
 			log.Fatalln("File not Found")
 		}
-		temp1, err := readInputAndScan(inArg, Cfg.BatchSize)
+		var temp1 *TempStore
+		var err error
+		switch filepath.Ext(inArg) {
+		case ".txt":
+			temp1, err = readTxtInputAndScan(inArg, Cfg.BatchSize)
+		case ".pq":
+		case ".parquet":
+			temp1, err = readParquetInputAndScan(inArg, Cfg.BatchSize)
+		default:
+			log.Fatalln("Unsupported file extension")
+		}
 		if err != nil {
 			if temp1 != nil {
 				log.Println("Temporary file path: %w", temp.Path())
