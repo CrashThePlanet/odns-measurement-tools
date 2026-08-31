@@ -146,7 +146,6 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	// catch requests that target predefined records
 	if slices.Contains(slices.Collect(maps.Keys(s.resource_records)), requestedDomain) {
-		fmt.Println("testtststst")
 		record := s.resource_records[requestedDomain]
 		if dns.RRToType(r.Question[0]) == dns.StringToType[record.qtype] {
 			rr, err := dns.New(fmt.Sprintf("%s 3600 IN %s %s", r.Question[0].Header().Name, record.qtype, record.value))
@@ -313,7 +312,7 @@ func (s *QminDnsServer) responder(ctx context.Context, w dns.ResponseWriter, r *
 	w, m = s.requestResponse(w, r)
 
 	if _, err := m.WriteTo(w); err != nil {
-		log.Fatalf("Write error: %v", err.Error())
+		log.Println("Write error: ", err.Error())
 	}
 }
 
