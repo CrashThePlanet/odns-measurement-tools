@@ -256,7 +256,7 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 
 	res2 := dnsQuery(d2, server, qType, timeout)
 	if res2.status == 3 {
-		res2 = dnsQuery(d1, server, qType, retryTimeout)
+		res2 = dnsQuery(d2, server, qType, retryTimeout)
 	}
 	res2.qmin_mode = false
 	res2.induction = false
