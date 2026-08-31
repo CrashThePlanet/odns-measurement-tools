@@ -336,10 +336,19 @@ func (s *QminDnsServer) Start_server() {
 	}
 	dns.HandleFunc(".", s.responder)
 	go s.cleanProbes()
-	server := &dns.Server{Addr: s.addr + ":" + strconv.Itoa(s.port), Net: Cfg.Protocol}
-
-	fmt.Println("DNS server listining on:", s.addr, ":", s.port, ";Protocol:", Cfg.Protocol)
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Server failed: %v", err)
-	}
+	udpServer := &dns.Server{Addr: s.addr + ":" + strconv.Itoa(s.port), Net: "udp"}
+	tcpServer := &dns.Server{Addr: s.addr + ":" + strconv.Itoa(s.port), Net: "tcp"}
+	go func() {
+		fmt.Println("DNS server listining on:", s.addr, ":", s.port, ";Protocol: udp")
+		if err := udpServer.ListenAndServe(); err != nil {
+			log.Fatalf("udp server failed: %v", err)
+		}
+	}()
+	go func() {
+		fmt.Println("DNS server listining on:", s.addr, ":", s.port, ";Protocol: tcp")
+		if err := tcpServer.ListenAndServe(); err != nil {
+			log.Fatalf("tcp server failed: %v", err)
+		}
+	}()
+	select {}
 }
