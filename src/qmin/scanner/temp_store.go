@@ -16,7 +16,7 @@ type TempStore struct {
 func NewTempStore() (*TempStore, error) {
 	f, err := os.CreateTemp("", "scan-results.gob")
 	if err != nil {
-		return nil, fmt.Errorf("could not create temp file: {}", err)
+		return nil, fmt.Errorf("could not create temp file: %w", err)
 	}
 
 	bufWriter := bufio.NewWriterSize(f, 1<<20)
@@ -29,7 +29,7 @@ func NewTempStore() (*TempStore, error) {
 
 func (t *TempStore) WriteSingle(data ParquetQueryResult) error {
 	if err := t.enc.Encode(&data); err != nil {
-		return fmt.Errorf("could not encode record: {}", err)
+		return fmt.Errorf("could not encode record: %w", err)
 	}
 	return nil
 }
@@ -37,7 +37,7 @@ func (t *TempStore) WriteSingle(data ParquetQueryResult) error {
 func (t *TempStore) WriteBatch(batch []ParquetQueryResult) error {
 	for i := range batch {
 		if err := t.enc.Encode(&batch[i]); err != nil {
-			return fmt.Errorf("could not encode record: {}", err)
+			return fmt.Errorf("could not encode record: %w", err)
 		}
 	}
 	return nil

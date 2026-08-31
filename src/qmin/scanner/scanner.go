@@ -449,8 +449,7 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 		switch filepath.Ext(inArg) {
 		case ".txt":
 			temp1, err = readInputTXTAndScan(inArg, Cfg.BatchSize)
-		case ".pq":
-		case ".parquet":
+		case ".pq", ".parquet":
 			temp1, err = readInputAndScan(inArg, Cfg.BatchSize)
 		default:
 			log.Fatalln("Unsupported file extension")
