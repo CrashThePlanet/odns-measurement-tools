@@ -208,7 +208,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	} else if p, ok := probes[idToken+"-induction"]; ok {
 
-		updatedInductionSeq, tokenNum, extended := updateProbeEntry(probe.tokenLength, p.inductionProbe.tokenSequence, tokenSeq, tokens, dns.RRToType(r.Question[0]))
+		updatedInductionSeq, tokenNum, extended := updateProbeEntry(p.tokenLength, p.inductionProbe.tokenSequence, tokenSeq, tokens, dns.RRToType(r.Question[0]))
 		p.inductionProbe.tokenSequence = updatedInductionSeq
 		if extended {
 			p.inductionProbe.currTokenNum = tokenNum
@@ -255,7 +255,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		return w, m
 	} else if len(probeMetaData) > 3 && probeMetaData[3] == "nxopti" {
 		if r.Question[0].Header().Name[0] == 'b' {
-			rr, err := dns.New(fmt.Sprintf("%s 3600 IN TXT \"%s\"", dns.TypeToString[dns.RRToType(r.Question[0])], "false,,,"))
+			rr, err := dns.New(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Header().Name, "false,,,"))
 			if err != nil {
 				fmt.Println("Error while creating RR %w", err)
 				m.Rcode = dns.RcodeServerFailure
@@ -277,6 +277,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 				Hdr:   dns.Header{Name: r.Question[0].Header().Name, Class: dns.ClassINET, TTL: 3600},
 				CNAME: rdata.CNAME{Target: domain + strings.Join(probeMetaData[:3], "-") + "." + s.baseURL},
 			}
+			m.Authoritative = false
 			m.Answer = append(m.Answer, rr)
 		} else if dns.RRToType(r.Question[0]) == dns.TypeTXT {
 			rr, err := dns.New(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Header().Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+",NULL,NULL"))
