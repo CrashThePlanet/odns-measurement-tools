@@ -24,6 +24,11 @@ import (
 var baseDomain string
 var randMax int
 
+var sem = make(chan struct{}, 10000)
+
+func acquire() { sem <- struct{}{} }
+func release() { <-sem }
+
 type ScanStat struct {
 	Start        time.Time
 	Fin          time.Time
@@ -217,8 +222,11 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 
 func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool) {
 	time.Sleep(time.Duration(rand.Intn(80)) * time.Millisecond)
-	server := *resolver.Queried_ip
+	acquire()
+
+	defer release()
 	defer wg.Done()
+	server := *resolver.Queried_ip
 	requestedDomain := domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 	res := dnsQuery(requestedDomain, server, qType, timeout)
 	// if timeout retry wiht longer timeout
@@ -237,6 +245,8 @@ func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Dura
 
 func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
 	time.Sleep(time.Duration(rand.Intn(80)) * time.Millisecond)
+	acquire()
+	defer release()
 	defer wg.Done()
 	server := *(resolver.Queried_ip)
 
