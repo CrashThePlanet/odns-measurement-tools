@@ -222,6 +222,7 @@ func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Dura
 	res := dnsQuery(requestedDomain, server, qType, timeout)
 	// if timeout retry wiht longer timeout
 	if res.status == 3 {
+		time.Sleep(time.Duration(20+rand.Intn(80)) * time.Millisecond)
 		requestedDomain = domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 		res = dnsQuery(requestedDomain, server, qType, retryTimeout)
 	}
@@ -244,6 +245,7 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 	res := dnsQuery(d1, server, qType, timeout)
 
 	if res.status == 3 {
+		time.Sleep(time.Duration(20+rand.Intn(80)) * time.Millisecond)
 		res = dnsQuery(d1, server, qType, retryTimeout)
 	}
 	res.qmin_mode = false
@@ -258,6 +260,7 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 
 	res2 := dnsQuery(d2, server, qType, timeout)
 	if res2.status == 3 {
+		time.Sleep(time.Duration(20+rand.Intn(80)) * time.Millisecond)
 		res2 = dnsQuery(d2, server, qType, retryTimeout)
 	}
 	res2.qmin_mode = false
