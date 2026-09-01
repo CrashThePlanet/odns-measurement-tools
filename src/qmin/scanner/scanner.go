@@ -216,6 +216,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 }
 
 func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool) {
+	time.Sleep(time.Duration(rand.Intn(80)) * time.Millisecond)
 	server := *resolver.Queried_ip
 	defer wg.Done()
 	requestedDomain := domainAssembly(server, tokenDepth, induction, qmin_mode, false)
@@ -235,6 +236,7 @@ func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Dura
 }
 
 func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
+	time.Sleep(time.Duration(rand.Intn(80)) * time.Millisecond)
 	defer wg.Done()
 	server := *(resolver.Queried_ip)
 
