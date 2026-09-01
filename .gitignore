@@ -30,3 +30,4 @@ src/data/processed/qmin/*
 src/notebook/qmin/*.html
 src/notebook/qmin/*.png
 *.zip
+*.txt
