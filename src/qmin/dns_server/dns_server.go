@@ -61,14 +61,14 @@ var (
 
 func (s *QminDnsServer) cleanProbes() {
 	for true {
-		probesMutex.Lock()
 		for k, v := range probes {
 			if time.Since(v.lastSeen).Milliseconds() > int64(s.timeout) {
 				// fmt.Println("delete old probe entry. New length:", len(probes))
+				probesMutex.Lock()
 				delete(probes, k)
+				probesMutex.Unlock()
 			}
 		}
-		probesMutex.Unlock()
 		time.Sleep(time.Duration(s.sleepCycle) * time.Millisecond)
 	}
 }
@@ -141,6 +141,8 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	}
 	dnsutil.SetReply(m, r)
 	m.Authoritative = true
+	m.UDPSize = r.UDPSize
+	m.Security = r.Security
 
 	requestedDomain := strings.ToLower(r.Question[0].Header().Name)
 
