@@ -256,6 +256,11 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		m.Answer = append(m.Answer, rr)
 		return w, m
 	} else if len(probeMetaData) > 3 && probeMetaData[3] == "nxopti" {
+		// NXDOMAIN optimization is only really interesting if the resolver suports QMIN
+		// therefore we can assume the resolver is using qmin for this part
+		// if the resolver does nxoptimization it will first query the A domain, recieves a NXDOMAIN for the A domain minus the top label (so just for idtoken + baseDOmain),
+		// stores NXDOMAIN, on query of B domain the resolver will see same interim idtoken domain and answer from cache
+		// so we can just anser everything with NXDOMAIN, except for the case where b.idtoken is queried directly. That means no NX optimization
 		if r.Question[0].Header().Name[0] == 'b' {
 			rr, err := dns.New(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Header().Name, "false,,,"))
 			if err != nil {
