@@ -48,7 +48,7 @@ func WriteOutputParquet(tempPath string, outPath string) error {
 		}
 
 		if _, writeErr := writer.Write(buf); writeErr != nil {
-			return fmt.Errorf("could not write row to parquet file: {}", writeErr.Error())
+			return fmt.Errorf("could not write row to parquet file: %w", writeErr)
 		}
 		buf = buf[:0]
 		return nil
