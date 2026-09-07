@@ -333,7 +333,7 @@ func (qsc *QMinScannerCommand) Run() (error, int) {
 	}
 
 	var scanner qmin_scanner.QMinScanner
-	scanner.Start_scan(qsc.fs.Args()[0], qsc.resolver_flag)
+	scanner.Start_scan(qsc.fs.Args(), qsc.resolver_flag)
 
 	return nil, 0
 }
