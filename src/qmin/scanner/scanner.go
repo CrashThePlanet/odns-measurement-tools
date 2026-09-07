@@ -86,11 +86,11 @@ type QMinScanner struct {
 
 type InputFileFormat struct {
 	// protocol                 string
-	Queried_ip *string `parquet:"queried_ip"`
+	Queried_ip string `parquet:"queried_ip"`
 	//replying_ip              string
 	//backend_resolver         string
 	//timestamp_request        string
-	Resolver_type *string `parquet:"resolver_type"`
+	Resolver_type string `parquet:"resolver_type"`
 	//queried_ip_country       string
 	//replying_ip_country      string
 	//queried_ip_asn           int64
@@ -208,11 +208,13 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		if !strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://") {
 			server = "https://" + server
 		}
-		req, err := dnshttp.NewRequest(http.MethodPost, server, m)
+		var req *http.Request
+		req, err = dnshttp.NewRequest(http.MethodPost, server, m)
 		if err != nil {
 			log.Fatalln("Request build error:", err)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		var resp *http.Response
+		resp, err = http.DefaultClient.Do(req)
 		if err != nil {
 			return evalCommError(err, server)
 		}
@@ -274,7 +276,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 }
 
 func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool) {
-	server := *resolver.Queried_ip
+	server := resolver.Queried_ip
 	defer wg.Done()
 	requestedDomain := domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 	res := dnsQuery(requestedDomain, server, qType, timeout)
@@ -283,7 +285,7 @@ func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Dura
 		requestedDomain = domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 		res = dnsQuery(requestedDomain, server, qType, retryTimeout)
 	}
-	res.ResolverType = *resolver.Resolver_type
+	res.ResolverType = resolver.Resolver_type
 	res.qmin_mode = qmin_mode
 	res.induction = induction
 	res.nxcheck = false
@@ -293,7 +295,7 @@ func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Dura
 
 func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
 	defer wg.Done()
-	server := *(resolver.Queried_ip)
+	server := resolver.Queried_ip
 
 	domain := domainAssembly(server, 1, false, false, true)
 	d1 := "a." + domain
@@ -307,7 +309,7 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 	res.qmin_mode = false
 	res.induction = false
 	res.nxcheck = true
-	res.ResolverType = *resolver.Resolver_type
+	res.ResolverType = resolver.Resolver_type
 	if res.status != 4 {
 		res.nxopti = -1
 		ch <- res
@@ -321,7 +323,7 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 	res2.qmin_mode = false
 	res2.induction = false
 	res2.nxcheck = true
-	res2.ResolverType = *resolver.Resolver_type
+	res2.ResolverType = resolver.Resolver_type
 	if res2.status != 4 && res2.status != 0 {
 		res.nxopti = -1
 		ch <- res
@@ -339,14 +341,13 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 }
 
 func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth int, rounds int, timeout time.Duration, retryTrimeout time.Duration) {
-
 	for i := 0; i < rounds; i++ {
 		fmt.Println("round", i+1, "/", rounds)
 		ch := make(chan QueryResult)
 		var wg sync.WaitGroup
 
 		for _, res := range resolver {
-			if res.Queried_ip == nil || res.Resolver_type == nil {
+			if res.Queried_ip == "" || res.Resolver_type == "" {
 				log.Println("nil value type (skipped): %w", res)
 				continue
 			}
@@ -442,7 +443,7 @@ func readTxtInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
 	for scanner.Scan() {
 		res := scanner.Text()
 		t := "Unset"
-		buf = append(buf, InputFileFormat{Queried_ip: &res, Resolver_type: &t})
+		buf = append(buf, InputFileFormat{Queried_ip: res, Resolver_type: t})
 
 		if len(buf) == batchSize {
 			log.Println("Part", partIndex)
@@ -490,7 +491,7 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 			log.Fatalln("Could not create Temporary file: %w", err)
 		}
 		res_type := "Unset"
-		scanResolvers([]InputFileFormat{{Queried_ip: &inArg, Resolver_type: &res_type}}, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
+		scanResolvers([]InputFileFormat{{Queried_ip: inArg, Resolver_type: res_type}}, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
 
 		if err := tempDataFile.Close(); err != nil {
 			log.Println("Temporary file path: %w", temp.Path())
@@ -506,8 +507,7 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 		switch filepath.Ext(inArg) {
 		case ".txt":
 			temp1, err = readTxtInputAndScan(inArg, Cfg.BatchSize)
-		case ".pq":
-		case ".parquet":
+		case ".pq", ".parquet":
 			temp1, err = readParquetInputAndScan(inArg, Cfg.BatchSize)
 		default:
 			log.Fatalln("Unsupported file extension")
@@ -558,5 +558,5 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	if err != nil {
 		log.Fatalln("Couldn't write Metadata.json file")
 	}
-	temp.Delete()
+	//temp.Delete()
 }
