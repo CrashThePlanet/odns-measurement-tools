@@ -520,11 +520,11 @@ func startFileProcessing(inputPath string, outputPath string, dbASN *maxminddb.R
 		}
 	}
 
-	if err := parquet.WriteFile(outputPath+"/test1.parquet", slices.Collect(maps.Values(resolver1))); err != nil {
+	if err := parquet.WriteFile(outputPath+"/analysed_resolver.parquet", slices.Collect(maps.Values(resolver1))); err != nil {
 		log.Fatalln("Error writing output Parquet file 1: ", err.Error())
 	}
 
-	if err := parquet.WriteFile(outputPath+"/test2.parquet", slices.Collect(maps.Values(resolver2))); err != nil {
+	if err := parquet.WriteFile(outputPath+"/pattern.parquet", slices.Collect(maps.Values(resolver2))); err != nil {
 		log.Fatalln("Error writing output Parquet file 2: ", err.Error())
 	}
 }
