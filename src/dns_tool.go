@@ -377,6 +377,7 @@ type QMINScannerPostProcCommand struct {
 	help_flag         bool
 	resolver_matching bool
 	combine_flag      bool
+	metadata_path     string
 }
 
 func NewQMINScannerPostProcCommand() *QMINScannerPostProcCommand {
@@ -392,6 +393,7 @@ func NewQMINScannerPostProcCommand() *QMINScannerPostProcCommand {
 	ppc.fs.StringVar(&ppc.outputPath, "out", "", "Path were the ouput files should be saved")
 	ppc.fs.BoolVar(&ppc.resolver_matching, "resolverMatch", false, "Matches observed pattern against known pattern produced by OpenSource resolver software. Only works with labelDepth=24 and a two label base Domain")
 	ppc.fs.BoolVar(&ppc.combine_flag, "combine", false, "Processes all input files into one output set; need to set -recursive")
+	ppc.fs.StringVar(&ppc.metadata_path, "m", "", "Path to metadata.json file. Will be used for all results")
 	return ppc
 }
 
@@ -415,7 +417,7 @@ func (ppc *QMINScannerPostProcCommand) Run() (error, int) {
 		return fmt.Errorf("In order to use the 'combine' flag, the 'recursive' flag needs to be set."), int(common.WRONG_INPUT_ARGS)
 	}
 
-	qmin.StartPostProcessing(ppc.fs.Args()[0], ppc.recursive, ppc.outputPath, ppc.resolver_matching, ppc.combine_flag)
+	qmin.StartPostProcessing(ppc.fs.Args()[0], ppc.recursive, ppc.outputPath, ppc.resolver_matching, ppc.combine_flag, ppc.metadata_path)
 
 	return nil, 0
 }

@@ -397,7 +397,7 @@ func getMetadataFromFile(path string) (*Metadata, error) {
 }
 
 // process a single results.parquet file
-func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[string]ScanResolverPair, dbASN *maxminddb.Reader, dbLoc *maxminddb.Reader, pattern_matching bool) *Metadata {
+func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[string]ScanResolverPair, dbASN *maxminddb.Reader, dbLoc *maxminddb.Reader, pattern_matching bool, metadata_path string) *Metadata {
 
 	file, err := os.Open(dirPath + "/result.parquet")
 	if err != nil {
@@ -408,7 +408,10 @@ func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[st
 		log.Fatalln("Input file has to be a .parquet file")
 	}
 
-	metadata, err := getMetadataFromFile(dirPath + "/metadata.json")
+	if metadata_path == "" {
+		metadata_path = dirPath + "/metadata.json"
+	}
+	metadata, err := getMetadataFromFile(metadata_path)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -451,7 +454,7 @@ type dirData struct {
 	info os.DirEntry
 }
 
-func getValidInputDirectories(basePath string) ([]dirData, error) {
+func getValidInputDirectories(basePath string, skipMetadataCondition bool) ([]dirData, error) {
 	directories := []dirData{}
 
 	err := filepath.WalkDir(basePath, func(path string, info os.DirEntry, err error) error {
@@ -461,8 +464,10 @@ func getValidInputDirectories(basePath string) ([]dirData, error) {
 		if _, err := os.Stat(path + "/result.parquet"); errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		if _, err := os.Stat(path + "/metadata.json"); errors.Is(err, os.ErrNotExist) {
-			return nil
+		if !skipMetadataCondition {
+			if _, err := os.Stat(path + "/metadata.json"); errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
 		}
 		directories = append(directories, dirData{path, info})
 		return nil
@@ -474,32 +479,38 @@ func getValidInputDirectories(basePath string) ([]dirData, error) {
 	return directories, nil
 }
 
-func startFileProcessing(inputPath string, outputPath string, dbASN *maxminddb.Reader, dbCountry *maxminddb.Reader, pattern_matching bool, combine bool) {
+func startFileProcessing(inputPath string, outputPath string, dbASN *maxminddb.Reader, dbCountry *maxminddb.Reader, pattern_matching bool, combine bool, metadata_path string) {
 	// these will hold the processed data
 	resolver1 := make(map[string]ScanResultResolver)
 	resolver2 := make(map[string]ScanResolverPair)
 
+	skipMetadataCondition := true
+	if metadata_path == "" {
+		metadata_path = inputPath + "/metadata.json"
+		skipMetadataCondition = false
+	}
+
 	if combine {
-		dirs, err := getValidInputDirectories(inputPath)
+		dirs, err := getValidInputDirectories(inputPath, skipMetadataCondition)
 		if err != nil {
 			log.Println(err)
 			return
 		}
 		for _, dir := range dirs {
 			fmt.Println("Now processing: ", dir.path)
-			processFile(dir.path, resolver1, resolver2, dbASN, dbCountry, pattern_matching)
+			processFile(dir.path, resolver1, resolver2, dbASN, dbCountry, pattern_matching, metadata_path)
 		}
 	} else {
 		if _, err := os.Stat(inputPath + "/result.parquet"); errors.Is(err, os.ErrNotExist) {
 			fmt.Println("results.parquet file doesnt exists in \"" + inputPath + "\" (skipping)")
 			return
 		}
-		if _, err := os.Stat(inputPath + "/metadata.json"); errors.Is(err, os.ErrNotExist) {
-			fmt.Println("metadata.json file doesnt exists in \"" + inputPath + "\" (skipping)")
+		if _, err := os.Stat(metadata_path); errors.Is(err, os.ErrNotExist) {
+			fmt.Println("metadata.json file doesnt exists: \"" + metadata_path + "\" (skipping)")
 			return
 		}
 		fmt.Println("Now processing: ", inputPath)
-		m := processFile(inputPath, resolver1, resolver2, dbASN, dbCountry, pattern_matching)
+		m := processFile(inputPath, resolver1, resolver2, dbASN, dbCountry, pattern_matching, metadata_path)
 		// writing metadata of scan to output directory
 		metadataJSON, err := json.Marshal(m)
 		if err != nil {
@@ -519,7 +530,7 @@ func startFileProcessing(inputPath string, outputPath string, dbASN *maxminddb.R
 }
 
 // main function of this module
-func StartPostProcessing(inputPath string, recursive bool, outpath string, pattern_matching bool, combine bool) {
+func StartPostProcessing(inputPath string, recursive bool, outpath string, pattern_matching bool, combine bool, metadata_path string) {
 	// default path/home/Til/Documents/Uni/bachelors/odns-measurement-tools/src/data/processed/qmin/2026-08-22_14-17/test1.parquet
 	outputPath := "./data/processed/qmin/"
 	// change if user set path
@@ -551,7 +562,7 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, patte
 	os.Mkdir(outputPath+fileName, dirStat.Mode().Perm())
 
 	if recursive && !combine {
-		dirs, err := getValidInputDirectories(inputPath)
+		dirs, err := getValidInputDirectories(inputPath, metadata_path != "")
 		if err != nil {
 			dbASN.Close()
 			dbCountry.Close()
@@ -564,12 +575,12 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, patte
 			}
 			tmp := outputPath + fileName + "/" + dir.info.Name()
 			os.Mkdir(tmp, dirStat.Mode().Perm())
-			startFileProcessing(dir.path, tmp, dbASN, dbCountry, pattern_matching, false)
+			startFileProcessing(dir.path, tmp, dbASN, dbCountry, pattern_matching, false, metadata_path)
 		}
 	} else if combine {
-		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, true)
+		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, true, metadata_path)
 	} else {
-		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, false)
+		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, false, metadata_path)
 	}
 
 }
