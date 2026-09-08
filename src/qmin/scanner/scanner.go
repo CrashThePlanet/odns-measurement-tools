@@ -10,8 +10,8 @@ import (
 	"log"
 	"math"
 	"math/rand"
-	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -113,33 +113,18 @@ var responsePattern = `^(?:[0-9]+(?:\.[0-9]+)*_[A-Za-z0-9]+\|)*[0-9]+(?:\.[0-9]+
 var reg = regexp.MustCompile(responsePattern)
 
 func targetToHex(target string) string {
-	if strings.Count(target, ":") > 1 {
-		log.Fatalln("IPv6 not supported")
-	}
-
-	if net.ParseIP(target) != nil {
-		if Cfg.Protocol == "doh" {
-			log.Fatalln("Looks like you tried to used a (doH) domain but the scanner is configured for udp/tcp scanning.")
-		}
-		out := ""
-		octets := strings.Split(target, ".")
-		for _, oc := range octets {
-			ocInt, err := strconv.Atoi(oc)
-			if err != nil {
-				log.Fatalln("Please provide an correct IPv4 Adress: ", target)
-			}
-			if ocInt < 16 {
-				out += "0"
-			}
-			out += strconv.FormatInt(int64(ocInt), 16)
-		}
-		return out
-	} else {
+	parsedIp, err := netip.ParseAddr(target)
+	if err != nil {
 		if Cfg.Protocol != "doh" {
 			log.Fatalln("Looks like you tried to used an IP but the scanner is configured for DoH scanning.")
 		}
 		return fmt.Sprintf("%X", crc32.ChecksumIEEE([]byte(target)))
 	}
+
+	if parsedIp.Is4() {
+		return fmt.Sprintf("%x", parsedIp.As4())
+	}
+	return fmt.Sprintf("%X", crc32.ChecksumIEEE([]byte(target)))
 }
 
 func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode bool, nxopti bool) string {
