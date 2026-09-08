@@ -1,16 +1,16 @@
 package qmin
 
 import (
-	"database/sql"
 	qmin_scanner "dns_tools/qmin/scanner"
-	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"maps"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -397,7 +397,7 @@ func getMetadataFromFile(path string) (*Metadata, error) {
 }
 
 // process a single results.parquet file
-func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[string]ScanResolverPair, dbASN *maxminddb.Reader, dbLoc *maxminddb.Reader, pattern_matching bool) (startTime string) {
+func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[string]ScanResolverPair, dbASN *maxminddb.Reader, dbLoc *maxminddb.Reader, pattern_matching bool, metadata_path string) *Metadata {
 
 	file, err := os.Open(dirPath + "/result.parquet")
 	if err != nil {
@@ -408,11 +408,13 @@ func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[st
 		log.Fatalln("Input file has to be a .parquet file")
 	}
 
-	metadata, err := getMetadataFromFile(dirPath + "/metadata.json")
+	if metadata_path == "" {
+		metadata_path = dirPath + "/metadata.json"
+	}
+	metadata, err := getMetadataFromFile(metadata_path)
 	if err != nil {
 		log.Fatalln(err)
 	}
-	startTime = metadata.Start
 
 	reader := parquet.NewGenericReader[qmin_scanner.ParquetQueryResult](file)
 	defer reader.Close()
@@ -444,92 +446,91 @@ func processFile(dirPath string, res1 map[string]ScanResultResolver, res2 map[st
 			}
 		}
 	}
-	return
+	return metadata
 }
 
-func openDuckDB() (*sql.DB, error) {
-	db, err := sql.Open("duckdb", "")
-	if err != nil {
-		return nil, fmt.Errorf("Could not open duckdb: %w", err)
-	}
-	_, err = db.Exec("INSTALL parquet;")
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("Could not install parquet extension: %w", err)
-	}
-	_, err = db.Exec("LOAD parquet;")
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("Could not load parquet extension: %w", err)
-	}
-	return db, nil
+type dirData struct {
+	path string
+	info os.DirEntry
 }
 
-type queryStat struct {
-	resolver_type string  `db:"resolver_type"`
-	qmin_enabled  TriBool `db:"qmin_enabled"`
-	count         int     `db:"COUNT"`
-}
-type scanStat struct {
-}
+func getValidInputDirectories(basePath string, skipMetadataCondition bool) ([]dirData, error) {
+	directories := []dirData{}
 
-func generateStatistics(filePath string, outputPath string, scanStart string) error {
-	db, err := openDuckDB()
-	if err != nil {
-		log.Fatalln("Failed to generate statistics: ", err)
-	}
-	defer db.Close()
-
-	rows, err := db.Query("SELECT resolver_type, qmin_enabled, COUNT(*) as COUNT FROM read_parquet('" + filePath + "') GROUP BY resolver_type, qmin_enabled;")
-	if err != nil {
-		return fmt.Errorf("COuld not run query against parquet file: %w", err)
-	}
-	var stat queryStat
-	stats := make(map[TriBool]int)
-	defer rows.Close()
-
-	for rows.Next() {
-		err := rows.Scan(&stat.qmin_enabled, &stat.count)
-		if err != nil {
-			return fmt.Errorf("Error reading row: %w", err)
+	err := filepath.WalkDir(basePath, func(path string, info os.DirEntry, err error) error {
+		if !info.IsDir() {
+			return nil
 		}
-		stats[stat.qmin_enabled] = stat.count
-	}
-	err = rows.Err()
+		if _, err := os.Stat(path + "/result.parquet"); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if !skipMetadataCondition {
+			if _, err := os.Stat(path + "/metadata.json"); errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+		}
+		directories = append(directories, dirData{path, info})
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("Error during row iteration: %w", err)
+		return nil, fmt.Errorf("Failed to get subdirectories: %w", err)
 	}
-	err = createStatCSV(stats, outputPath, scanStart)
-	return err
+
+	return directories, nil
 }
-func createStatCSV(stats map[TriBool]int, outPath string, scanStart string) error {
-	f, err := os.Create(outPath + "/stats.csv")
-	if err != nil {
-		return fmt.Errorf("Failed to create statistics csv file: %w", err)
+
+func startFileProcessing(inputPath string, outputPath string, dbASN *maxminddb.Reader, dbCountry *maxminddb.Reader, pattern_matching bool, combine bool, metadata_path string) {
+	// these will hold the processed data
+	resolver1 := make(map[string]ScanResultResolver)
+	resolver2 := make(map[string]ScanResolverPair)
+
+	skipMetadataCondition := true
+	if metadata_path == "" {
+		metadata_path = inputPath + "/metadata.json"
+		skipMetadataCondition = false
 	}
-	writer := csv.NewWriter(f)
-	defer f.Close()
-	stat := [][]string{
-		{scanStart, strconv.Itoa(stats[TriBool(Nil)]), strconv.Itoa(stats[TriBool(False)]), strconv.Itoa(stats[TriBool(True)]), strconv.Itoa(stats[TriBool(Uncertain)])},
+
+	if combine {
+		dirs, err := getValidInputDirectories(inputPath, skipMetadataCondition)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		for _, dir := range dirs {
+			fmt.Println("Now processing: ", dir.path)
+			processFile(dir.path, resolver1, resolver2, dbASN, dbCountry, pattern_matching, metadata_path)
+		}
+	} else {
+		if _, err := os.Stat(inputPath + "/result.parquet"); errors.Is(err, os.ErrNotExist) {
+			fmt.Println("results.parquet file doesnt exists in \"" + inputPath + "\" (skipping)")
+			return
+		}
+		if _, err := os.Stat(metadata_path); errors.Is(err, os.ErrNotExist) {
+			fmt.Println("metadata.json file doesnt exists: \"" + metadata_path + "\" (skipping)")
+			return
+		}
+		fmt.Println("Now processing: ", inputPath)
+		m := processFile(inputPath, resolver1, resolver2, dbASN, dbCountry, pattern_matching, metadata_path)
+		// writing metadata of scan to output directory
+		metadataJSON, err := json.Marshal(m)
+		if err != nil {
+			log.Println("Could not convert metadata to struct: skipping")
+		} else {
+			os.WriteFile(outputPath+"/scan_metadata.json", metadataJSON, 0644)
+		}
 	}
-	header := []string{"scanStartTime", "noAnswer", "noQMIN", "QMIN", "Ambiguous"}
-	err = writer.Write(header)
-	if err != nil {
-		return fmt.Errorf("Could not write stats to file: %w", err)
+
+	if err := parquet.WriteFile(outputPath+"/analysed_resolver.parquet", slices.Collect(maps.Values(resolver1))); err != nil {
+		log.Fatalln("Error writing output Parquet file 1: ", err.Error())
 	}
-	err = writer.Write(stat[0])
-	if err != nil {
-		return fmt.Errorf("Could not write stats to file: %w", err)
+
+	if err := parquet.WriteFile(outputPath+"/pattern.parquet", slices.Collect(maps.Values(resolver2))); err != nil {
+		log.Fatalln("Error writing output Parquet file 2: ", err.Error())
 	}
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		return fmt.Errorf("%w", err)
-	}
-	return nil
 }
 
 // main function of this module
-func StartPostProcessing(inputPath string, recursive bool, outpath string, stat bool, pattern_matching bool) {
+func StartPostProcessing(inputPath string, recursive bool, outpath string, pattern_matching bool, combine bool, metadata_path string) {
 	// default path/home/Til/Documents/Uni/bachelors/odns-measurement-tools/src/data/processed/qmin/2026-08-22_14-17/test1.parquet
 	outputPath := "./data/processed/qmin/"
 	// change if user set path
@@ -539,8 +540,20 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, stat 
 			outputPath += "/"
 		}
 	}
-	fileName := time.Now().Local().Format("2006-01-02_15-04")
 
+	// open the maxmind DBs for IP enrichment
+	dbASN, err := maxminddb.Open("data/external/GeoLite2-ASN.mmdb")
+	if err != nil {
+		log.Fatalln("Couldn't open ASN DB: ", err.Error())
+	}
+	defer dbASN.Close()
+	dbCountry, err := maxminddb.Open("data/external/GeoLite2-Country.mmdb")
+	if err != nil {
+		log.Fatalln("Couldn't open Country DB: ", err.Error())
+	}
+	defer dbCountry.Close()
+
+	fileName := time.Now().Local().Format("2006-01-02_15-04")
 	// check if the ouput path can be accessed and create new directory
 	dirStat, err := os.Stat(outputPath)
 	if err != nil {
@@ -548,44 +561,26 @@ func StartPostProcessing(inputPath string, recursive bool, outpath string, stat 
 	}
 	os.Mkdir(outputPath+fileName, dirStat.Mode().Perm())
 
-	// open the maxmind DBs for IP enrichment
-	dbASN, err := maxminddb.Open("data/external/GeoLite2-ASN.mmdb")
-	if err != nil {
-		log.Fatalln("Couln't open ASN DB: ", err.Error())
-	}
-	defer dbASN.Close()
-	dbCountry, err := maxminddb.Open("data/external/GeoLite2-Country.mmdb")
-	if err != nil {
-		log.Fatalln("Couln't open Country DB: ", err.Error())
-	}
-	defer dbCountry.Close()
-
-	// these will hold the processed data
-	resolver1 := make(map[string]ScanResultResolver)
-	resolver2 := make(map[string]ScanResolverPair)
-
-	scanStart := processFile(inputPath, resolver1, resolver2, dbASN, dbCountry, pattern_matching)
-	/*
-		dirs, err := os.ReadDir(inputPath)
+	if recursive && !combine {
+		dirs, err := getValidInputDirectories(inputPath, metadata_path != "")
 		if err != nil {
-			log.Fatalln("err walking directory: ", err.Error())
+			dbASN.Close()
+			dbCountry.Close()
+			log.Fatal(err)
 		}
 		for _, dir := range dirs {
-		}*/
-	// write both files
-
-	if err := parquet.WriteFile(outputPath+fileName+"/test1.parquet", slices.Collect(maps.Values(resolver1))); err != nil {
-		log.Fatalln("Error writing output Parquet file 1: ", err.Error())
-	}
-
-	if err := parquet.WriteFile(outputPath+fileName+"/test2.parquet", slices.Collect(maps.Values(resolver2))); err != nil {
-		log.Fatalln("Error writing output Parquet file 2: ", err.Error())
-	}
-
-	if stat {
-		err := generateStatistics(outputPath+fileName+"/test1.parquet", outputPath+fileName, scanStart)
-		if err != nil {
-			log.Fatalln(err)
+			dirStat, err := os.Stat(outputPath)
+			if err != nil {
+				log.Fatalln("Couldn't access output directory:", err.Error())
+			}
+			tmp := outputPath + fileName + "/" + dir.info.Name()
+			os.Mkdir(tmp, dirStat.Mode().Perm())
+			startFileProcessing(dir.path, tmp, dbASN, dbCountry, pattern_matching, false, metadata_path)
 		}
+	} else if combine {
+		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, true, metadata_path)
+	} else {
+		startFileProcessing(inputPath, outputPath+fileName, dbASN, dbCountry, pattern_matching, false, metadata_path)
 	}
+
 }

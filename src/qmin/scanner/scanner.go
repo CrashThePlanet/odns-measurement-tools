@@ -60,6 +60,7 @@ type QueryResult struct {
 	nxopti             int
 	nxcheck            bool
 	ResolverType       string
+	FileName           string
 }
 
 type ParquetQueryResult struct {
@@ -73,6 +74,7 @@ type ParquetQueryResult struct {
 	ModeCheck        bool   `parquet:"qmin_mode_check"`
 	NXCheck          bool   `parquet:"nx_check"`
 	NxOptimization   int    `parquet:"nxOptimization"`
+	FileName         string `parquet:"filename,dict,zstd"`
 }
 
 type QMinScanner struct {
@@ -305,7 +307,7 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 
 	res2 := dnsQuery(d2, server, qType, timeout)
 	if res2.status == 3 {
-		res2 = dnsQuery(d1, server, qType, retryTimeout)
+		res2 = dnsQuery(d2, server, qType, retryTimeout)
 	}
 	res2.qmin_mode = false
 	res2.induction = false
@@ -327,7 +329,8 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 	ch <- res2
 }
 
-func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth int, rounds int, timeout time.Duration, retryTrimeout time.Duration) {
+func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth int, rounds int, timeout time.Duration, retryTrimeout time.Duration, fileName string) {
+
 	for i := 0; i < rounds; i++ {
 		fmt.Println("round", i+1, "/", rounds)
 		ch := make(chan QueryResult)
@@ -364,13 +367,14 @@ func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth i
 				NxOptimization:   v.nxopti,
 				NXCheck:          v.nxcheck,
 				ResolverType:     v.ResolverType,
+				FileName:         fileName,
 			}
 			tempFile.WriteSingle(resLine)
 		}
 	}
 }
 
-func readParquetInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
+func readInputAndScan(inputPath string, batchSize int, fileName string) (*TempStore, error) {
 	tempDataFile, err := NewTempStore()
 	if err != nil {
 		return nil, fmt.Errorf("Could not create Temporary file: %w", err)
@@ -395,7 +399,7 @@ func readParquetInputAndScan(inputPath string, batchSize int) (*TempStore, error
 
 		n, err := reader.Read(rows)
 		if n > 0 {
-			scanResolvers(rows[:n], tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
+			scanResolvers(rows[:n], tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)), fileName)
 		}
 		if err == io.EOF {
 			break
@@ -412,7 +416,7 @@ func readParquetInputAndScan(inputPath string, batchSize int) (*TempStore, error
 	return tempDataFile, nil
 }
 
-func readTxtInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
+func readInputTXTAndScan(inputPath string, batchSize int, fileName string) (*TempStore, error) {
 	tempDataFile, err := NewTempStore()
 	if err != nil {
 		return nil, fmt.Errorf("Could not create Temporary file: %w", err)
@@ -423,40 +427,70 @@ func readTxtInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
 	}
 	defer inputFile.Close()
 
-	buf := make([]InputFileFormat, 0, batchSize)
 	scanner := bufio.NewScanner(inputFile)
+	batch := make([]InputFileFormat, 0, batchSize)
 
-	partIndex := 1
 	for scanner.Scan() {
-		res := scanner.Text()
-		t := "Unset"
-		buf = append(buf, InputFileFormat{Queried_ip: res, Resolver_type: t})
+		t := scanner.Text()
+		ty := "unset"
+		batch = append(batch, InputFileFormat{Queried_ip: &t, Resolver_type: &ty})
 
-		if len(buf) == batchSize {
-			log.Println("Part", partIndex)
-			scanResolvers(buf, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
-
-			buf = buf[:0]
+		if len(batch) == batchSize {
+			scanResolvers(batch, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)), fileName)
+			batch = batch[:0]
 		}
 	}
 
-	if len(buf) > 0 {
-		scanResolvers(buf, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
-	}
-
 	if err := scanner.Err(); err != nil {
-		return tempDataFile, fmt.Errorf("Error while reading input file: %w", err)
+		return nil, fmt.Errorf("error reading file: %w", err)
+	}
+	if len(batch) > 0 {
+		scanResolvers(batch, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)), fileName)
 	}
 
 	if err := tempDataFile.Close(); err != nil {
 		return tempDataFile, fmt.Errorf("Error while trying to close temporary file: %w", err)
 	}
+
 	return tempDataFile, nil
 }
 
-func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
+func scanFile(path string, outputPath string) {
+	tempDataFile, err := NewTempStore()
+	if err != nil {
+		log.Fatalln("Could not create Temporary file: %w", err)
+	}
+
+	defer func() {
+		tempDataFile.Delete()
+	}()
+
+	fileStat, err := os.Stat(path)
+
+	if os.IsNotExist(err) {
+		log.Fatalln("File not Found")
+	}
+	switch filepath.Ext(path) {
+	case ".txt":
+		tempDataFile, err = readInputTXTAndScan(path, Cfg.BatchSize, fileStat.Name())
+	case ".pq", ".parquet":
+		tempDataFile, err = readInputAndScan(path, Cfg.BatchSize, fileStat.Name())
+	default:
+		log.Println("Unsupported file extension: ", path)
+		return
+	}
+	if err != nil {
+		if tempDataFile != nil {
+			log.Println("Temporary file path: %w", tempDataFile.Path())
+		}
+		log.Fatal(err)
+	}
+	log.Println("Temporary file path: %w", tempDataFile.Path())
+	WriteOutputParquet(tempDataFile.Path(), outputPath+"/result.parquet")
+}
+
+func (scan *QMinScanner) Start_scan(inArg []string, inputIsResolver bool) {
 	stats := ScanStat{
-		Input:        inArg,
 		Timeout:      Cfg.Timeout,
 		RetryTimeout: Cfg.RetryTimeout,
 		Protocol:     Cfg.Protocol,
@@ -471,47 +505,6 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	baseDomain = Cfg.BaseURL
 	randMax = Cfg.RandMax
 
-	dohResolverHashMap = make(map[string]string)
-
-	var temp *TempStore
-	// user can input ether one single ip or a csv file containing multiple
-	// default is the csv file
-	if inputIsResolver {
-		tempDataFile, err := NewTempStore()
-		if err != nil {
-			log.Fatalln("Could not create Temporary file: %w", err)
-		}
-		res_type := "Unset"
-		scanResolvers([]InputFileFormat{{Queried_ip: inArg, Resolver_type: res_type}}, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)))
-
-		if err := tempDataFile.Close(); err != nil {
-			log.Println("Temporary file path: %w", temp.Path())
-			log.Fatalln("Error while trying to close temporary file: %w", err)
-		}
-		temp = tempDataFile
-	} else {
-		if _, err := os.Stat(inArg); os.IsNotExist(err) {
-			log.Fatalln("File not Found")
-		}
-		var temp1 *TempStore
-		var err error
-		switch filepath.Ext(inArg) {
-		case ".txt":
-			temp1, err = readTxtInputAndScan(inArg, Cfg.BatchSize)
-		case ".pq", ".parquet":
-			temp1, err = readParquetInputAndScan(inArg, Cfg.BatchSize)
-		default:
-			log.Fatalln("Unsupported file extension")
-		}
-		if err != nil {
-			if temp1 != nil {
-				log.Println("Temporary file path: %w", temp.Path())
-			}
-			log.Fatal(err)
-		}
-		temp = temp1
-	}
-
 	// get permission of output directory to pass them down
 	dirStat, err := os.Stat(Cfg.OutputDir)
 	if os.IsNotExist(err) {
@@ -522,18 +515,57 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	}
 
 	workingDir := Cfg.OutputDir + start.Local().Format("2006-01-02_15-04")
-	os.Mkdir(workingDir, dirStat.Mode().Perm())
+	err = os.Mkdir(workingDir, dirStat.Mode().Perm())
+	if err != nil {
+		log.Fatalln("Failed to create output directory: ", err)
+	}
+	// user can input ether one single ip or a csv file containing multiple
+	// default is the csv file
+	if inputIsResolver {
+		tempDataFile, err := NewTempStore()
+		if err != nil {
+			log.Fatalln("Could not create Temporary file: %w", err)
+		}
+		res_type := "Unset"
+		scanResolvers([]InputFileFormat{{Queried_ip: &inArg[0], Resolver_type: &res_type}}, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)), "programArgument")
 
-	/*fmt.Println("estimated maximum runtime:", time.Duration(
-	int(
-		math.Ceil(
-			float64(len(server)/Cfg.BatchSize)))*
-		Cfg.Rounds*
-		(Cfg.Timeout+Cfg.RetryTimeout)*
-		int(time.Millisecond)).String())*/
+		if err := tempDataFile.Close(); err != nil {
+			log.Println("Temporary file path: %w", tempDataFile.Path())
+			log.Fatalln("Error while trying to close temporary file: %w", err)
+		}
+		log.Println("Temporary file path: %w", tempDataFile.Path())
+		WriteOutputParquet(tempDataFile.Path(), workingDir+"/result.parquet")
+		tempDataFile.Delete()
+	} else {
+		for _, arg := range inArg {
+			argStat, err := os.Stat(arg)
+			if err != nil {
+				log.Println("Failed to get OS Stat of passed argument: ", err)
+				continue
+			}
+			if !argStat.IsDir() {
+				fileNameNoExt := strings.Split(argStat.Name(), ".")[0]
+				os.Mkdir(workingDir+"/"+fileNameNoExt, dirStat.Mode().Perm())
+				scanFile(arg, workingDir+"/"+fileNameNoExt)
+				continue
+			}
 
-	log.Println("Temporary file path: %w", temp.Path())
-	WriteOutputParquet(temp.Path(), workingDir+"/result.parquet")
+			dirEntris, err := os.ReadDir(arg)
+			if err != nil {
+				log.Println("Failed to read files in given directory: ", err)
+				continue
+			}
+
+			for _, dirEntry := range dirEntris {
+				if !dirEntry.IsDir() {
+					fileNameNoExt := strings.Split(dirEntry.Name(), ".")[0]
+					os.Mkdir(workingDir+"/"+fileNameNoExt, dirStat.Mode().Perm())
+					scanFile(filepath.Join(arg, dirEntry.Name()), workingDir+"/"+fileNameNoExt)
+				}
+			}
+
+		}
+	}
 
 	fmt.Println("runtime: ", time.Since(start))
 
@@ -549,5 +581,4 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	if err != nil {
 		log.Fatalln("Couldn't write Metadata.json file")
 	}
-	temp.Delete()
 }

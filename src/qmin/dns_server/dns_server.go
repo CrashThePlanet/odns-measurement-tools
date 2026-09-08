@@ -141,12 +141,13 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 	}
 	dnsutil.SetReply(m, r)
 	m.Authoritative = true
+	m.UDPSize = r.UDPSize
+	m.Security = r.Security
 
 	requestedDomain := strings.ToLower(r.Question[0].Header().Name)
 
 	// catch requests that target predefined records
 	if slices.Contains(slices.Collect(maps.Keys(s.resource_records)), requestedDomain) {
-		fmt.Println("testtststst")
 		record := s.resource_records[requestedDomain]
 		if dns.RRToType(r.Question[0]) == dns.StringToType[record.qtype] {
 			rr, err := dns.New(fmt.Sprintf("%s 3600 IN %s %s", r.Question[0].Header().Name, record.qtype, record.value))
@@ -209,7 +210,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 
 	} else if p, ok := probes[idToken+"-induction"]; ok {
 
-		updatedInductionSeq, tokenNum, extended := updateProbeEntry(probe.tokenLength, p.inductionProbe.tokenSequence, tokenSeq, tokens, dns.RRToType(r.Question[0]))
+		updatedInductionSeq, tokenNum, extended := updateProbeEntry(p.tokenLength, p.inductionProbe.tokenSequence, tokenSeq, tokens, dns.RRToType(r.Question[0]))
 		p.inductionProbe.tokenSequence = updatedInductionSeq
 		if extended {
 			p.inductionProbe.currTokenNum = tokenNum
@@ -255,8 +256,13 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 		m.Answer = append(m.Answer, rr)
 		return w, m
 	} else if len(probeMetaData) > 3 && probeMetaData[3] == "nxopti" {
+		// NXDOMAIN optimization is only really interesting if the resolver suports QMIN
+		// therefore we can assume the resolver is using qmin for this part
+		// if the resolver does nxoptimization it will first query the A domain, recieves a NXDOMAIN for the A domain minus the top label (so just for idtoken + baseDOmain),
+		// stores NXDOMAIN, on query of B domain the resolver will see same interim idtoken domain and answer from cache
+		// so we can just anser everything with NXDOMAIN, except for the case where b.idtoken is queried directly. That means no NX optimization
 		if r.Question[0].Header().Name[0] == 'b' {
-			rr, err := dns.New(fmt.Sprintf("%s 3600 IN TXT \"%s\"", dns.TypeToString[dns.RRToType(r.Question[0])], "false,,,"))
+			rr, err := dns.New(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Header().Name, "false,,,"))
 			if err != nil {
 				fmt.Println("Error while creating RR %w", err)
 				m.Rcode = dns.RcodeServerFailure
@@ -278,6 +284,7 @@ func (s *QminDnsServer) requestResponse(w dns.ResponseWriter, r *dns.Msg) (dns.R
 				Hdr:   dns.Header{Name: r.Question[0].Header().Name, Class: dns.ClassINET, TTL: 3600},
 				CNAME: rdata.CNAME{Target: domain + strings.Join(probeMetaData[:3], "-") + "." + s.baseURL},
 			}
+			m.Authoritative = false
 			m.Answer = append(m.Answer, rr)
 		} else if dns.RRToType(r.Question[0]) == dns.TypeTXT {
 			rr, err := dns.New(fmt.Sprintf("%s 3600 IN TXT \"%s\"", r.Question[0].Header().Name, probe.incomingResolver+","+strings.Join(probe.tokenSequence, "|")+",NULL,NULL"))
@@ -313,7 +320,7 @@ func (s *QminDnsServer) responder(ctx context.Context, w dns.ResponseWriter, r *
 	w, m = s.requestResponse(w, r)
 
 	if _, err := m.WriteTo(w); err != nil {
-		log.Fatalf("Write error: %v", err.Error())
+		log.Println("Write error: ", err.Error())
 	}
 }
 
@@ -336,10 +343,19 @@ func (s *QminDnsServer) Start_server() {
 	}
 	dns.HandleFunc(".", s.responder)
 	go s.cleanProbes()
-	server := &dns.Server{Addr: s.addr + ":" + strconv.Itoa(s.port), Net: Cfg.Protocol}
-
-	fmt.Println("DNS server listining on:", s.addr, ":", s.port, ";Protocol:", Cfg.Protocol)
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Server failed: %v", err)
-	}
+	udpServer := &dns.Server{Addr: s.addr + ":" + strconv.Itoa(s.port), Net: "udp"}
+	tcpServer := &dns.Server{Addr: s.addr + ":" + strconv.Itoa(s.port), Net: "tcp"}
+	go func() {
+		fmt.Println("DNS server listining on:", s.addr, ":", s.port, ";Protocol: udp")
+		if err := udpServer.ListenAndServe(); err != nil {
+			log.Fatalf("udp server failed: %v", err)
+		}
+	}()
+	go func() {
+		fmt.Println("DNS server listining on:", s.addr, ":", s.port, ";Protocol: tcp")
+		if err := tcpServer.ListenAndServe(); err != nil {
+			log.Fatalf("tcp server failed: %v", err)
+		}
+	}()
+	select {}
 }
