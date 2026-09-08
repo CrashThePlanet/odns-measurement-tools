@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -188,7 +189,8 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		c.ReadTimeout = timeout
 		c.WriteTimeout = timeout
 
-		res, _, err = c.Exchange(context.TODO(), m, Cfg.Protocol, server+":"+strconv.Itoa(Cfg.Port))
+		targetServer := net.JoinHostPort(server, strconv.Itoa(Cfg.Port))
+		res, _, err = c.Exchange(context.TODO(), m, Cfg.Protocol, targetServer)
 	case "doh":
 		if !strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://") {
 			server = "https://" + server
