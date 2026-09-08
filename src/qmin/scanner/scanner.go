@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log"
 	"math"
 	"math/rand"
+	"net"
+	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,11 +22,17 @@ import (
 	"time"
 
 	"codeberg.org/miekg/dns"
+	"codeberg.org/miekg/dns/dnshttp"
 	"github.com/parquet-go/parquet-go"
 )
 
 var baseDomain string
 var randMax int
+
+// we want the resolver inside the target domain (for identification and to further avoid collisions). For IPv4 and IPv6 we can simply encode to hex, as both have a fixed length.
+// But DoH DOmain are full domains and have an arbitrary length. If we encode to Hex to Base64 we run into the max character limit of domains name pretty fast.
+// Therefore we create a custom Hashfunction with hashmap and store said hashmap into a file anlongside the result
+var dohResolverHashMap map[string]string
 
 type ScanStat struct {
 	Start        time.Time
@@ -79,11 +89,11 @@ type QMinScanner struct {
 
 type InputFileFormat struct {
 	// protocol                 string
-	Queried_ip *string `parquet:"queried_ip"`
+	Queried_ip string `parquet:"queried_ip"`
 	//replying_ip              string
 	//backend_resolver         string
 	//timestamp_request        string
-	Resolver_type *string `parquet:"resolver_type"`
+	Resolver_type string `parquet:"resolver_type"`
 	//queried_ip_country       string
 	//replying_ip_country      string
 	//queried_ip_asn           int64
@@ -105,27 +115,27 @@ type InputFileFormat struct {
 var responsePattern = `^(?:[0-9]+(?:\.[0-9]+)*_[A-Za-z0-9]+\|)*[0-9]+(?:\.[0-9]+)*\.[0-9A-Fa-f]{8}-[0-9]+-[^-|_]+(?:-(?:inducation|qmin_mode|nxopti))?_[A-Za-z0-9]+$`
 var reg = regexp.MustCompile(responsePattern)
 
-func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode bool, nxopti bool) string {
-	octets := strings.Split(dnsServer, ".")
-	if len(octets) != 4 {
-		log.Fatalln("Please provide an correct IPv4 Adress: ", dnsServer)
+func targetToHex(target string) string {
+	parsedIp, err := netip.ParseAddr(target)
+	if err != nil {
+		if Cfg.Protocol != "doh" {
+			log.Fatalln("Looks like you tried to used an IP but the scanner is configured for DoH scanning.")
+		}
+		return fmt.Sprintf("%X", crc32.ChecksumIEEE([]byte(target)))
 	}
+
+	if parsedIp.Is4() {
+		return fmt.Sprintf("%x", parsedIp.As4())
+	}
+	return fmt.Sprintf("%X", crc32.ChecksumIEEE([]byte(target)))
+}
+
+func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode bool, nxopti bool) string {
 	if induction && qmin_mode {
 		log.Fatalln("Only test for induced queries OR NX behaviour in one query!")
 	}
 
-	var idToken = ""
-
-	for _, oc := range octets {
-		ocInt, err := strconv.Atoi(oc)
-		if err != nil {
-			log.Fatalln("Please provide an correct IPv4 Adress: ", dnsServer)
-		}
-		if ocInt < 16 {
-			idToken += "0"
-		}
-		idToken += strconv.FormatInt(int64(ocInt), 16)
-	}
+	var idToken = targetToHex(dnsServer)
 
 	idToken += "-" + strconv.Itoa(tokenDepth) + "-"
 	idToken += strconv.Itoa(rand.Intn(randMax))
@@ -149,35 +159,72 @@ func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode 
 	return domain + "." + baseDomain
 }
 
+func evalCommError(err error, server string) QueryResult {
+	if strings.Contains(err.Error(), "i/o timeout") {
+		return QueryResult{resolverIP: server, requestingIP: "NONE", status: 3, Res: "timeout"}
+	}
+	if strings.Contains(err.Error(), "connection refused") {
+		return QueryResult{resolverIP: server, requestingIP: "NONE", status: 1, Res: "refused"}
+	}
+	if strings.Contains(err.Error(), "no route to host") {
+		return QueryResult{resolverIP: server, requestingIP: "NONE", status: 5, Res: "noRoute"}
+	}
+	fmt.Println(server, ": unhandled error: ", err)
+	return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+}
+
 func dnsQuery(domain string, server string, qType uint16, timeout time.Duration) QueryResult {
 	m := dns.NewMsg(domain, qType)
 	m.RecursionDesired = true
 
-	// increase UDP Buffer size
-	// some Resolver send too large packages
-	if Cfg.Protocol == "udp" {
-		m.UDPSize, m.Security = 4096, false
-	}
-	c := dns.NewClient()
-	c.ReadTimeout = timeout
-	c.WriteTimeout = timeout
+	var res *dns.Msg
+	var err error
 
-	res, _, err := c.Exchange(context.TODO(), m, Cfg.Protocol, server+":"+strconv.Itoa(Cfg.Port))
+	switch Cfg.Protocol {
+	case "udp", "tcp":
+		// increase UDP Buffer size
+		// some Resolver send too large packages
+		if Cfg.Protocol == "udp" {
+			m.UDPSize, m.Security = 4096, false
+		}
+		c := dns.NewClient()
+		c.ReadTimeout = timeout
+		c.WriteTimeout = timeout
+
+		targetServer := net.JoinHostPort(server, strconv.Itoa(Cfg.Port))
+		res, _, err = c.Exchange(context.TODO(), m, Cfg.Protocol, targetServer)
+	case "doh":
+		if !strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://") {
+			server = "https://" + server
+		}
+		var req *http.Request
+		req, err = dnshttp.NewRequest(http.MethodPost, server, m)
+		if err != nil {
+			log.Fatalln("Request build error:", err)
+		}
+		var resp *http.Response
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return evalCommError(err, server)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "http status: " + strconv.Itoa(resp.StatusCode)}
+		}
+
+		res, err = dnshttp.Response(resp)
+		if err != nil {
+			fmt.Println("Failed to parse HTTP response:", err)
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+		}
+	default:
+		log.Fatalln("Wrong or unsupported protocol:", Cfg.Protocol)
+	}
 
 	if err != nil {
-		if strings.Contains(err.Error(), "i/o timeout") {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 3, Res: "timeout"}
-		}
-		if strings.Contains(err.Error(), "connection refused") {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 1, Res: "refused"}
-		}
-		if strings.Contains(err.Error(), "no route to host") {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 5, Res: "noRoute"}
-		}
-		fmt.Println(server, ": unhandled error: ", err)
-		return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+		return evalCommError(err, server)
 	}
-
 	if res.Rcode != dns.RcodeSuccess {
 		switch res.Rcode {
 		case dns.RcodeServerFailure:
@@ -218,7 +265,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 }
 
 func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool) {
-	server := *resolver.Queried_ip
+	server := resolver.Queried_ip
 	defer wg.Done()
 	requestedDomain := domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 	res := dnsQuery(requestedDomain, server, qType, timeout)
@@ -227,7 +274,7 @@ func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Dura
 		requestedDomain = domainAssembly(server, tokenDepth, induction, qmin_mode, false)
 		res = dnsQuery(requestedDomain, server, qType, retryTimeout)
 	}
-	res.ResolverType = *resolver.Resolver_type
+	res.ResolverType = resolver.Resolver_type
 	res.qmin_mode = qmin_mode
 	res.induction = induction
 	res.nxcheck = false
@@ -237,7 +284,7 @@ func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Dura
 
 func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
 	defer wg.Done()
-	server := *(resolver.Queried_ip)
+	server := resolver.Queried_ip
 
 	domain := domainAssembly(server, 1, false, false, true)
 	d1 := "a." + domain
@@ -251,7 +298,7 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 	res.qmin_mode = false
 	res.induction = false
 	res.nxcheck = true
-	res.ResolverType = *resolver.Resolver_type
+	res.ResolverType = resolver.Resolver_type
 	if res.status != 4 {
 		res.nxopti = -1
 		ch <- res
@@ -265,7 +312,7 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 	res2.qmin_mode = false
 	res2.induction = false
 	res2.nxcheck = true
-	res2.ResolverType = *resolver.Resolver_type
+	res2.ResolverType = resolver.Resolver_type
 	if res2.status != 4 && res2.status != 0 {
 		res.nxopti = -1
 		ch <- res
@@ -290,7 +337,7 @@ func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth i
 		var wg sync.WaitGroup
 
 		for _, res := range resolver {
-			if res.Queried_ip == nil || res.Resolver_type == nil {
+			if res.Queried_ip == "" || res.Resolver_type == "" {
 				log.Println("nil value type (skipped): %w", res)
 				continue
 			}
