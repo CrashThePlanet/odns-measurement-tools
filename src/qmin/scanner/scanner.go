@@ -114,7 +114,7 @@ var reg = regexp.MustCompile(responsePattern)
 
 func targetToHex(target string) string {
 	if strings.Count(target, ":") > 1 {
-		log.Fatalln("IPv& not supported")
+		log.Fatalln("IPv6 not supported")
 	}
 
 	if net.ParseIP(target) != nil {
@@ -460,6 +460,10 @@ func readTxtInputAndScan(inputPath string, batchSize int) (*TempStore, error) {
 	if err := scanner.Err(); err != nil {
 		return tempDataFile, fmt.Errorf("Error while reading input file: %w", err)
 	}
+
+	if err := tempDataFile.Close(); err != nil {
+		return tempDataFile, fmt.Errorf("Error while trying to close temporary file: %w", err)
+	}
 	return tempDataFile, nil
 }
 
@@ -558,5 +562,5 @@ func (scan *QMinScanner) Start_scan(inArg string, inputIsResolver bool) {
 	if err != nil {
 		log.Fatalln("Couldn't write Metadata.json file")
 	}
-	//temp.Delete()
+	temp.Delete()
 }
