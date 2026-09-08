@@ -55,6 +55,7 @@ type ScanResultResolver struct {
 	Nx_optimization    TriBool        `parquet:"nx_optimization"`
 	Errors             map[string]int `parquet:"errors"`
 	Count              int            `parquet:"count"`
+	Filename           string         `parquet:"filename,dict,zstd`
 }
 
 // Induction_Requesting_IP         string `parquet:"induction_requesting_ip,dict,zstd"`
@@ -203,6 +204,7 @@ func evalRow(row qmin_scanner.ParquetQueryResult, ASNDB *maxminddb.Reader, Count
 	r1.Induction_QMIN = TriBool(Nil)
 	r1.Nx_optimization = TriBool(Nil)
 	r1.Errors = make(map[string]int)
+	r1.Filename = row.FileName
 
 	// reuqesting IP is NONE if we get and error from the resolver
 	// this can happen if an error occurs or when testing is related to NXDOMAIN responses
@@ -486,7 +488,7 @@ func startFileProcessing(inputPath string, outputPath string, dbASN *maxminddb.R
 
 	skipMetadataCondition := true
 	if metadata_path == "" {
-		metadata_path = inputPath + "/metadata.json"
+		// metadata_path = inputPath + "/metadata.json"
 		skipMetadataCondition = false
 	}
 
