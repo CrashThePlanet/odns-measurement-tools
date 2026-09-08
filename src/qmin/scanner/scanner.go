@@ -433,7 +433,7 @@ func readInputTXTAndScan(inputPath string, batchSize int, fileName string) (*Tem
 	for scanner.Scan() {
 		t := scanner.Text()
 		ty := "unset"
-		batch = append(batch, InputFileFormat{Queried_ip: &t, Resolver_type: &ty})
+		batch = append(batch, InputFileFormat{Queried_ip: t, Resolver_type: ty})
 
 		if len(batch) == batchSize {
 			scanResolvers(batch, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)), fileName)
@@ -527,7 +527,7 @@ func (scan *QMinScanner) Start_scan(inArg []string, inputIsResolver bool) {
 			log.Fatalln("Could not create Temporary file: %w", err)
 		}
 		res_type := "Unset"
-		scanResolvers([]InputFileFormat{{Queried_ip: &inArg[0], Resolver_type: &res_type}}, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)), "programArgument")
+		scanResolvers([]InputFileFormat{{Queried_ip: inArg[0], Resolver_type: res_type}}, tempDataFile, Cfg.LabelDepth, Cfg.Rounds, time.Duration(Cfg.Timeout*int(time.Millisecond)), time.Duration(Cfg.RetryTimeout*int(time.Millisecond)), "programArgument")
 
 		if err := tempDataFile.Close(); err != nil {
 			log.Println("Temporary file path: %w", tempDataFile.Path())
