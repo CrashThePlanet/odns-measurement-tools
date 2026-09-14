@@ -5,6 +5,7 @@ import (
 	"dns_tools/logging"
 	"encoding/csv"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -23,7 +24,7 @@ import (
 type stop struct{}
 
 type IBase_methods interface {
-	Handle_pkt(ip *layers.IPv4, pkt gopacket.Packet)
+	Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packet)
 }
 
 type RawL2 struct {
@@ -34,6 +35,20 @@ type RawL2 struct {
 
 func get_def_gateway() (net.IP, error) {
 	out, err := exec.Command("ip", "route", "show", "default").Output()
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Fields(string(out))
+	for i, f := range fields {
+		if f == "via" && i+1 < len(fields) {
+			return net.ParseIP(fields[i+1]), nil
+		}
+	}
+	return nil, errors.New("default gateway not found")
+}
+
+func get_def_gateway_v6() (net.IP, error) {
+	out, err := exec.Command("ip", "-6", "route", "show", "default").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +98,8 @@ type Base struct {
 	Ip_chan          chan net.IP
 	Waiting_to_end   bool
 	Send_limiter     ratelimiter.Limiter
-	L2               RawL2
+	L2_v4            RawL2 // Layer 2 for IPv4
+	L2_v6            RawL2 // Layer 2 for IPv6
 	Writer           *csv.Writer
 	fragbuf          fragment_buffer_s
 }
@@ -126,25 +142,40 @@ func (st *Base) Base_init() {
 			dstMac[5],
 		},
 	}
-	eth_header := []byte{
+	eth_header_v4 := []byte{
 		dstMac[0], dstMac[1], dstMac[2], dstMac[3], dstMac[4], dstMac[5],
 		srcMac[0], srcMac[1], srcMac[2], srcMac[3], srcMac[4], srcMac[5],
 		0x08, 0x00, // ipv4
 	}
+	eth_header_v6 := []byte{
+		dstMac[0], dstMac[1], dstMac[2], dstMac[3], dstMac[4], dstMac[5],
+		srcMac[0], srcMac[1], srcMac[2], srcMac[3], srcMac[4], srcMac[5],
+		0x86, 0xDD, // ipv6
+	}
 
-	st.L2 = RawL2{
-		Eth_header: eth_header,
+	st.L2_v4 = RawL2{
+		Eth_header: eth_header_v4,
+		Addr:       addr,
+		Fd:         fd,
+	}
+	st.L2_v6 = RawL2{
+		Eth_header: eth_header_v6,
 		Addr:       addr,
 		Fd:         fd,
 	}
 }
 
 func (st *Base) Process_pkt(pkt gopacket.Packet) {
-	ip_layer := pkt.Layer(layers.LayerTypeIPv4)
-	if ip_layer == nil {
+	// ipv6 fragmentation reassbemly is skipped
+	if ipv6_layer := pkt.Layer(layers.LayerTypeIPv6); ipv6_layer != nil {
+		st.Base_methods.Handle_pkt(ipv6_layer.(*layers.IPv6), pkt)
 		return
 	}
-	ip, ok := ip_layer.(*layers.IPv4)
+	ipv4_layer := pkt.Layer(layers.LayerTypeIPv4)
+	if ipv4_layer == nil {
+		return
+	}
+	ip, ok := ipv4_layer.(*layers.IPv4)
 	if !ok {
 		return
 	}
@@ -257,6 +288,9 @@ func Get_cidr_filename(cidr_filename string) (fname string, netip net.IP, hostsi
 		return
 	}
 	ip, ip_net, err := net.ParseCIDR(cidr_filename)
+	if ip.To4() == nil {
+		panic(fmt.Sprintf("Cannot scan IPv6 subnets: %s", cidr_filename))
+	}
 	_, file_err := os.Stat(cidr_filename)
 	if err != nil && file_err == nil {
 		// using filename

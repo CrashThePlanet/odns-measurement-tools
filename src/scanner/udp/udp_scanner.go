@@ -161,10 +161,17 @@ func (udps *Udp_scanner) send_dns(id uint32, dst_ip net.IP, src_port layers.UDPP
 	udps.Scan_data.Items[udp_scan_item_key{src_port, dnsid}] = &s_d_item
 	udps.Scan_data.Mu.Unlock()
 
-	udps.Send_udp_pkt(udps.Build_dns(dst_ip, src_port, dnsid, config.Cfg.Dns_query))
+	l3, l4, payload := udps.Build_dns(dst_ip, src_port, dnsid, config.Cfg.Dns_query)
+	if ipv4, ok := l3.(*layers.IPv4); ok {
+		udps.Send_udp_pkt(*ipv4, l4, payload)
+		return
+	}
+	if ipv6, ok := l3.(*layers.IPv6); ok {
+		udps.Send_udp_pkt6(*ipv6, l4, payload)
+	}
 }
 
-func (udps *Udp_scanner) Handle_pkt(ip *layers.IPv4, pkt gopacket.Packet) {
+func (udps *Udp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packet) {
 	udp_layer := pkt.Layer(layers.LayerTypeUDP)
 	if udp_layer == nil {
 		return
@@ -187,7 +194,7 @@ func (udps *Udp_scanner) Handle_pkt(ip *layers.IPv4, pkt gopacket.Packet) {
 			logging.Println(5, "Handle-Pkt", "DNS not found")
 			return
 		}
-		logging.Println(5, "Handle-Pkt", "got DNS response from", ip.SrcIP.String(), "port", udp.DstPort, "id", dns.ID)
+		logging.Println(5, "Handle-Pkt", "got DNS response from", net.IP(ip.NetworkFlow().Src().String()).String(), "port", udp.DstPort, "id", dns.ID)
 		// check if item in map and assign value
 		udps.Scan_data.Mu.Lock()
 		scan_item, ok := udps.Scan_data.Items[udp_scan_item_key{udp.DstPort, dns.ID}]
@@ -201,7 +208,7 @@ func (udps *Udp_scanner) Handle_pkt(ip *layers.IPv4, pkt gopacket.Packet) {
 		if !ok {
 			log.Fatal("cast failed, wrong type")
 		}
-		udp_scan_item.Answerip = ip.SrcIP
+		udp_scan_item.Answerip = net.IP(ip.NetworkFlow().Src().Raw())
 		udp_scan_item.Ts_resp = time.Now()
 		if len(dns.Answers) != 0 {
 			udp_scan_item.Dns_recs = append(udp_scan_item.Dns_recs, dns.Answers...)
@@ -247,6 +254,15 @@ func (udps *Udp_scanner) init_udp() {
 }
 
 func (udps *Udp_scanner) gen_ips(netip net.IP, hostsize int) bool {
+	// bypass generator for ipv6 address
+	if netip.To4() == nil {
+		select {
+		case udps.Ip_chan <- netip:
+			return true
+		case <-udps.Stop_chan:
+			return false
+		}
+	}
 	netip_int := generator.Ip42uint32(netip)
 	var lcg_ipv4 generator.Lcg
 	lcg_ipv4.Init(int(math.Pow(2, float64(hostsize))))
@@ -295,7 +311,8 @@ func (udps *Udp_scanner) gen_ips_wait(netip net.IP, hostsize int) {
 func (udps *Udp_scanner) Start_scan(args []string, outpath string) {
 	udps.Scanner_init()
 	udps.Sender_init()
-	udps.L2_sender = &udps.L2
+	udps.L2_sender = &udps.L2_v4
+	udps.L2_sender6 = &udps.L2_v6
 	udps.Scanner_methods = udps
 	udps.Base_methods = udps
 	udps.bound_sockets = []*net.UDPConn{}
@@ -351,7 +368,8 @@ func (udps *Udp_scanner) Start_scan(args []string, outpath string) {
 func (udps *Udp_scanner) Start_internal(nets []net.IP, hostsize int) []scanner.Scan_data_item {
 	udps.Scanner_init_internal()
 	udps.Sender_init()
-	udps.L2_sender = &udps.L2
+	udps.L2_sender = &udps.L2_v4
+	udps.L2_sender6 = &udps.L2_v6
 	udps.Scanner_methods = udps
 	udps.Base_methods = udps
 	//udps.bound_sockets = []*net.UDPConn{}

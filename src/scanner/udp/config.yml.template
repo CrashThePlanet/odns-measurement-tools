@@ -1,5 +1,6 @@
 iface_name: <iface>
 iface_ip: <ip>
+iface_ip6: <v6 ip>
 dst_port: 53
 dns_query: <domain>
 dns_query_type: A

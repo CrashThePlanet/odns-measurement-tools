@@ -6,11 +6,10 @@ import (
 	"dns_tools/logging"
 	"net"
 
-	"math/rand"
-
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
 const (
@@ -18,9 +17,11 @@ const (
 )
 
 type Udp_sender struct {
-	L2_sender  *common.RawL2
-	L3_Raw_con *ipv4.RawConn
-	DNS_type   uint16
+	L2_sender   *common.RawL2
+	L2_sender6  *common.RawL2
+	L3_Raw_con  *ipv4.RawConn
+	L3_Raw_con6 *ipv6.PacketConn
+	DNS_type    uint16
 }
 
 func (sender *Udp_sender) Sender_init() {
@@ -34,6 +35,13 @@ func (sender *Udp_sender) Sender_init() {
 	if err != nil {
 		panic(err)
 	}
+
+	var pkt_con6 net.PacketConn
+	pkt_con6, err = net.ListenPacket("ip6:udp", config.Cfg.Iface_ip6)
+	if err != nil {
+		panic(err)
+	}
+	sender.L3_Raw_con6 = ipv6.NewPacketConn(pkt_con6)
 	// set dns type
 	switch config.Cfg.Dns_query_type {
 	case "A":
@@ -48,6 +56,30 @@ func (sender *Udp_sender) Sender_init() {
 		sender.DNS_type = uint16(layers.DNSTypeTXT)
 	default:
 		panic("wrong DNS query type")
+	}
+}
+
+func (sender *Udp_sender) Send_udp_pkt6(ip layers.IPv6, udp layers.UDP, payload []byte) {
+	if config.Cfg.Craft_ethernet {
+		logging.Println(6, "Send", "Layer 2 send")
+		buffer := gopacket.NewSerializeBuffer()
+		if err := gopacket.SerializeLayers(buffer, common.Opts,
+			&ip,
+			&udp,
+			gopacket.Payload(payload),
+		); err != nil {
+			panic(err)
+		}
+
+		sender.L2_sender6.Send(buffer.Bytes())
+		return
+	}
+	udp_buf := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(udp_buf, common.Opts, &udp, gopacket.Payload(payload)); err != nil {
+		panic(err)
+	}
+	if _, err := sender.L3_Raw_con6.WriteTo(udp_buf.Bytes(), nil, &net.IPAddr{IP: ip.DstIP}); err != nil {
+		panic(err)
 	}
 }
 
@@ -88,24 +120,37 @@ func (sender *Udp_sender) Send_udp_pkt(ip layers.IPv4, udp layers.UDP, payload [
 	}
 }
 
-func (sender *Udp_sender) Build_dns(dst_ip net.IP, src_port layers.UDPPort, dnsid uint16, query string) (layers.IPv4, layers.UDP, []byte) {
+func buildNetworkLayer(dst_ip net.IP) gopacket.NetworkLayer {
+	if v4 := dst_ip.To4(); v4 != nil {
+		return &layers.IPv4{
+			Version:  4,
+			TTL:      64,
+			SrcIP:    net.ParseIP(config.Cfg.Iface_ip),
+			DstIP:    dst_ip,
+			Protocol: layers.IPProtocolUDP,
+			Id:       1,
+		}
+	}
+	return &layers.IPv6{
+		Version:    6,
+		HopLimit:   64,
+		SrcIP:      net.ParseIP(config.Cfg.Iface_ip6),
+		DstIP:      dst_ip,
+		NextHeader: layers.IPProtocolUDP,
+	}
+}
+
+func (sender *Udp_sender) Build_dns(dst_ip net.IP, src_port layers.UDPPort, dnsid uint16, query string) (gopacket.NetworkLayer, layers.UDP, []byte) {
 	// === build packet ===
 	// Create ip layer
-	ip := layers.IPv4{
-		Version:  4,
-		TTL:      64,
-		SrcIP:    net.ParseIP(config.Cfg.Iface_ip),
-		DstIP:    dst_ip,
-		Protocol: layers.IPProtocolUDP,
-		Id:       uint16(rand.Intn(65536)),
-	}
+	ip := buildNetworkLayer(dst_ip)
 
 	// Create udp layer
 	udp := layers.UDP{
 		SrcPort: src_port,
 		DstPort: layers.UDPPort(config.Cfg.Dst_port),
 	}
-	udp.SetNetworkLayerForChecksum(&ip)
+	udp.SetNetworkLayerForChecksum(ip)
 
 	// create dns layers
 	qst := layers.DNSQuestion{

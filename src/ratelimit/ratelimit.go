@@ -455,10 +455,24 @@ func (tester *Rate_tester) rate_test_target_sub(id int, entry *Resolver_entry, s
 		// entry.tfwd_ips[entry.tfwd_pool_pos]
 		if config.Cfg.Rate_concurrent_pool {
 			logging.Println(6, "Sender "+strconv.Itoa(id)+"-"+strconv.Itoa(subid), "sending dns to", entry.tfwd_ips[subid].String(), ",resolver", entry.resolver_ip.String())
-			tester.Send_udp_pkt(tester.Build_dns(entry.tfwd_ips[subid], layers.UDPPort(port), *dnsid, query_domain))
+			l3, l4, payload := tester.Build_dns(entry.tfwd_ips[subid], layers.UDPPort(port), *dnsid, query_domain)
+			if ipv4, ok := l3.(*layers.IPv4); ok {
+				tester.Send_udp_pkt(*ipv4, l4, payload)
+			}
+
+			if ipv6, ok := l3.(*layers.IPv6); ok {
+				tester.Send_udp_pkt6(*ipv6, l4, payload)
+			}
 		} else {
 			logging.Println(6, "Sender "+strconv.Itoa(id)+"-"+strconv.Itoa(subid), "sending dns to", entry.tfwd_ips[entry.tfwd_pool_pos].String(), ",resolver", entry.resolver_ip.String())
-			tester.Send_udp_pkt(tester.Build_dns(entry.tfwd_ips[entry.tfwd_pool_pos], layers.UDPPort(port), *dnsid, query_domain))
+			l3, l4, payload := tester.Build_dns(entry.tfwd_ips[entry.tfwd_pool_pos], layers.UDPPort(port), *dnsid, query_domain)
+			if ipv4, ok := l3.(*layers.IPv4); ok {
+				tester.Send_udp_pkt(*ipv4, l4, payload)
+			}
+
+			if ipv6, ok := l3.(*layers.IPv6); ok {
+				tester.Send_udp_pkt6(*ipv6, l4, payload)
+			}
 			entry.tfwd_pool_pos = (entry.tfwd_pool_pos + 1) % len(entry.tfwd_ips)
 		}
 		entry.rate_data[subid].moving_sent_packets += 1
@@ -653,7 +667,7 @@ func (tester *Rate_tester) send_packets(id int) {
 	}
 }
 
-func (tester *Rate_tester) Handle_pkt(ip *layers.IPv4, pkt gopacket.Packet) {
+func (tester *Rate_tester) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packet) {
 	rec_time := time.Now().UnixMicro()
 
 	udp_layer := pkt.Layer(layers.LayerTypeUDP)
@@ -752,7 +766,15 @@ func (tester *Rate_tester) inject_cache() {
 					for _, query_domain := range tester.domains {
 						// per resolver iterate all 1k domains
 						logging.Println(6, "Cache-Injector "+strconv.Itoa(id), "sending dns to", tfwd, ",resolver", entry.resolver_ip.String())
-						tester.Send_udp_pkt(tester.Build_dns(tfwd, layers.UDPPort(outport), dnsid, query_domain))
+
+						l3, l4, payload := tester.Build_dns(tfwd, layers.UDPPort(outport), dnsid, query_domain)
+						if ipv4, ok := l3.(*layers.IPv4); ok {
+							tester.Send_udp_pkt(*ipv4, l4, payload)
+						}
+
+						if ipv6, ok := l3.(*layers.IPv6); ok {
+							tester.Send_udp_pkt6(*ipv6, l4, payload)
+						}
 						dnsid++
 						_ = rate_limiter.Take()
 					}
@@ -781,7 +803,7 @@ func (tester *Rate_tester) Start_ratetest(args []string, outpath string) {
 	}
 	logging.Println(4, nil, "rate curve:", tester.rate_curve)
 	tester.current_port = uint32(config.Cfg.Port_min)
-	tester.L2_sender = &tester.L2
+	tester.L2_sender = &tester.L2_v4
 	tester.Base_methods = tester
 	tester.finished_resolvers = make(chan *Resolver_entry, 128)
 	tester.Sender_init()

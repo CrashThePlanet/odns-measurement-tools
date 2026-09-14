@@ -64,17 +64,29 @@ type tcp_scan_item_key struct {
 	seq  uint32
 }
 
-func (tcps *Tcp_scanner) Build_ack_with_dns(dst_ip net.IP, src_port layers.TCPPort, seq_num uint32, ack_num uint32) (layers.IPv4, layers.TCP, []byte) {
-	// === build packet ===
-	// Create ip layer
-	ip := layers.IPv4{
-		Version:  4,
-		TTL:      64,
-		SrcIP:    net.ParseIP(config.Cfg.Iface_ip),
-		DstIP:    dst_ip,
-		Protocol: layers.IPProtocolTCP,
-		Id:       1,
+func buildNetworkLayer(dst_ip net.IP) gopacket.NetworkLayer {
+	if v4 := dst_ip.To4(); v4 != nil {
+		return &layers.IPv4{
+			Version:  4,
+			TTL:      64,
+			SrcIP:    net.ParseIP(config.Cfg.Iface_ip),
+			DstIP:    dst_ip,
+			Protocol: layers.IPProtocolTCP,
+			Id:       1,
+		}
 	}
+	return &layers.IPv6{
+		Version:    6,
+		HopLimit:   64,
+		SrcIP:      net.ParseIP(config.Cfg.Iface_ip6),
+		DstIP:      dst_ip,
+		NextHeader: layers.IPProtocolTCP,
+	}
+}
+
+func (tcps *Tcp_scanner) Build_ack_with_dns(dst_ip net.IP, src_port layers.TCPPort, seq_num uint32, ack_num uint32) (gopacket.NetworkLayer, layers.TCP, []byte) {
+	// === build packet ===
+	ip := buildNetworkLayer(dst_ip)
 
 	// Create tcp layer
 	tcp := layers.TCP{
@@ -86,7 +98,7 @@ func (tcps *Tcp_scanner) Build_ack_with_dns(dst_ip net.IP, src_port layers.TCPPo
 		Ack:     seq_num + 1,
 		Window:  8192,
 	}
-	tcp.SetNetworkLayerForChecksum(&ip)
+	tcp.SetNetworkLayerForChecksum(ip)
 
 	// create dns layers
 	qst := layers.DNSQuestion{
@@ -116,7 +128,14 @@ func (tcps *Tcp_scanner) Build_ack_with_dns(dst_ip net.IP, src_port layers.TCPPo
 }
 
 func (tcps *Tcp_scanner) Send_ack_with_dns(dst_ip net.IP, src_port layers.TCPPort, seq_num uint32, ack_num uint32) {
-	tcps.Send_tcp_pkt(tcps.Build_ack_with_dns(dst_ip, src_port, seq_num, ack_num))
+	l3, l4, payload := tcps.Build_ack_with_dns(dst_ip, src_port, seq_num, ack_num)
+	if ipv6, ok := l3.(*layers.IPv6); ok {
+		tcps.Send_tcp_pkt_v6(*ipv6, l4, payload)
+		return
+	}
+	if ipv4, ok := l3.(*layers.IPv4); ok {
+		tcps.Send_tcp_pkt_v4(*ipv4, l4, payload)
+	}
 }
 
 func scan_item_to_strarr(scan_item *tcp_scan_data_item) []string {
@@ -173,7 +192,7 @@ func (tcps *Tcp_scanner) Write_item(root_item *scanner.Scan_data_item) {
 	tcps.Scan_data.Mu.Unlock()
 }
 
-func (tcps *Tcp_scanner) Handle_pkt(ip *layers.IPv4, pkt gopacket.Packet) {
+func (tcps *Tcp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packet) {
 	tcp_layer := pkt.Layer(layers.LayerTypeTCP)
 	if tcp_layer == nil {
 		return
@@ -215,7 +234,7 @@ func (tcps *Tcp_scanner) Handle_pkt(ip *layers.IPv4, pkt gopacket.Packet) {
 				port: tcp_l.DstPort,
 				seq:  tcp_l.Seq,
 				ack:  tcp_l.Ack,
-				ip:   ip.SrcIP,
+				ip:   net.IP(ip.NetworkFlow().Src().Raw()),
 				flags: tcp_common.TCP_flags{
 					FIN: tcp_l.FIN,
 					SYN: tcp_l.SYN,
@@ -244,7 +263,7 @@ func (tcps *Tcp_scanner) Handle_pkt(ip *layers.IPv4, pkt gopacket.Packet) {
 			last_data_item := tcp_root_data_item.last()
 			if !(last_data_item.flags.Is_PSH_ACK()) {
 				logging.Println(5, nil, "missing PSH-ACK, dropping")
-				tcps.Send_ack_pos_fin(ip.SrcIP, tcp_l.DstPort, tcp_l.Seq, tcp_l.Ack, true)
+				tcps.Send_ack_pos_fin(net.IP(ip.NetworkFlow().Src().Raw()), tcp_l.DstPort, tcp_l.Seq, tcp_l.Ack, true)
 				return
 			}
 			logging.Println(5, nil, "ACKing FIN-ACK")
@@ -316,7 +335,7 @@ func (tcps *Tcp_scanner) Handle_pkt(ip *layers.IPv4, pkt gopacket.Packet) {
 			port: tcp_l.DstPort,
 			seq:  tcp_l.Seq,
 			ack:  tcp_l.Ack,
-			ip:   ip.SrcIP,
+			ip:   net.IP(ip.NetworkFlow().Src().Raw()),
 			flags: tcp_common.TCP_flags{
 				FIN: tcp_l.FIN,
 				SYN: tcp_l.SYN,
@@ -367,14 +386,7 @@ func (tcps *Tcp_scanner) send_syn(id uint32, dst_ip net.IP) {
 
 	// === build packet ===
 	// Create ip layer
-	ip := layers.IPv4{
-		Version:  4,
-		TTL:      64,
-		SrcIP:    net.ParseIP(config.Cfg.Iface_ip),
-		DstIP:    dst_ip,
-		Protocol: layers.IPProtocolTCP,
-		Id:       1,
-	}
+	ip := buildNetworkLayer(dst_ip)
 
 	// Create tcp layer
 	tcp := layers.TCP{
@@ -384,9 +396,15 @@ func (tcps *Tcp_scanner) send_syn(id uint32, dst_ip net.IP) {
 		Seq:     seq,
 		Ack:     0,
 	}
-	tcp.SetNetworkLayerForChecksum(&ip)
+	tcp.SetNetworkLayerForChecksum(ip)
 
-	tcps.Send_tcp_pkt(ip, tcp, nil)
+	if ipv6, ok := ip.(*layers.IPv6); ok {
+		tcps.Send_tcp_pkt_v6(*ipv6, tcp, nil)
+		return
+	}
+	if ipv4, ok := ip.(*layers.IPv4); ok {
+		tcps.Send_tcp_pkt_v4(*ipv4, tcp, nil)
+	}
 }
 
 type u32id struct {
@@ -438,16 +456,26 @@ func (tcps *Tcp_scanner) init_tcp() {
 
 func (tcps *Tcp_scanner) gen_ips(netip net.IP, hostsize int) {
 	defer tcps.Wg.Done()
-	netip_int := generator.Ip42uint32(netip)
-	var lcg_ipv4 generator.Lcg
-	lcg_ipv4.Init(int(math.Pow(2, float64(hostsize))))
-	for lcg_ipv4.Has_next() {
+	// bypass generator for ipv6 address
+	if netip.To4() == nil {
 		select {
+		case tcps.Ip_chan <- netip:
 		case <-tcps.Stop_chan:
 			return
-		default:
-			val := lcg_ipv4.Next()
-			tcps.Ip_chan <- generator.Uint322ip(netip_int + uint32(val))
+		}
+
+	} else {
+		netip_int := generator.Ip42uint32(netip)
+		var lcg_ipv4 generator.Lcg
+		lcg_ipv4.Init(int(math.Pow(2, float64(hostsize))))
+		for lcg_ipv4.Has_next() {
+			select {
+			case <-tcps.Stop_chan:
+				return
+			default:
+				val := lcg_ipv4.Next()
+				tcps.Ip_chan <- generator.Uint322ip(netip_int + uint32(val))
+			}
 		}
 	}
 	// wait some time to send out SYNs & handle the responses
@@ -463,7 +491,8 @@ func (tcps *Tcp_scanner) gen_ips(netip net.IP, hostsize int) {
 func (tcps *Tcp_scanner) Start_scan(args []string, outpath string) {
 	tcps.Scanner_init()
 	tcps.Sender_init()
-	tcps.L2_sender = &tcps.L2
+	tcps.L2_sender = &tcps.L2_v4
+	tcps.L2_sender6 = &tcps.L2_v6
 	tcps.Scanner_methods = tcps
 	tcps.Base_methods = tcps
 	tcps.Set_iptable_rule()

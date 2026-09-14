@@ -53,7 +53,7 @@ func Get_ether_handle() *pcapgo.EthernetHandle {
 		panic(err)
 	}
 	// cannot filter for src port and protocol here, since the packets could be fragmented and would be dropped by the filter
-	filter_string := fmt.Sprint("ip dst ", config.Cfg.Iface_ip)
+	filter_string := fmt.Sprintf("(ip dst %s) or (ip6 dst %s)", config.Cfg.Iface_ip, config.Cfg.Iface_ip6)
 	logging.Println(5, "Handle", "filter string:", filter_string)
 	bpf_instr, err := pcap.CompileBPFFilter(layers.LinkTypeEthernet, iface.MTU+14, filter_string)
 	if err != nil {

@@ -11,6 +11,8 @@ type Cfg_db struct {
 	Iface_name string `yaml:"iface_name"`
 	// the interface's IP address
 	Iface_ip string `yaml:"iface_ip"`
+	// the interface's IPv& address
+	Iface_ip6 string `yaml:"iface_ip6"`
 	// the scan's destination port, typically 53 for DNS
 	Dst_port uint16 `yaml:"dst_port" env-default:"53"`
 	// the dns query name to use during scanning

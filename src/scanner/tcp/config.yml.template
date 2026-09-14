@@ -1,5 +1,6 @@
 iface_name: <iface>
 iface_ip: <ip>
+iface_ip6: <ip6>
 dst_port: 53
 dns_query: <domain>
 exclude_ips_fname: exclude_ips.txt
