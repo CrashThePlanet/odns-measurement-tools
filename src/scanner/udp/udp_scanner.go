@@ -28,34 +28,34 @@ type Udp_scanner struct {
 	udp_common.Udp_sender
 	udp_common.Udp_binder
 	// slice for sockets that will be bound on program start
-	bound_sockets []*net.UDPConn
-	ip_loop_id    synced_init
+	Bound_sockets []*net.UDPConn
+	Ip_loop_id    Synced_init
 }
 
 // lockable datastructure for the init phase
-type synced_init struct {
-	mu    sync.Mutex
-	id    uint32
-	port  uint16
-	dnsid uint16
+type Synced_init struct {
+	Mu    sync.Mutex
+	Id    uint32
+	Port  uint16
+	Dnsid uint16
 }
 
-func (udps *Udp_scanner) update_sync_init() (uint32, uint16, uint16) {
-	udps.ip_loop_id.mu.Lock()
-	defer udps.ip_loop_id.mu.Unlock()
-	udps.ip_loop_id.id += 1
-	if (uint32)(udps.ip_loop_id.dnsid)+1 > 0xFFFF {
-		udps.ip_loop_id.dnsid = 0
+func (udps *Udp_scanner) Update_sync_init() (uint32, uint16, uint16) {
+	udps.Ip_loop_id.Mu.Lock()
+	defer udps.Ip_loop_id.Mu.Unlock()
+	udps.Ip_loop_id.Id += 1
+	if (uint32)(udps.Ip_loop_id.Dnsid)+1 > 0xFFFF {
+		udps.Ip_loop_id.Dnsid = 0
 		// restart at the beginning of the port range
-		if (uint32)(udps.ip_loop_id.port)+1 > (uint32)(config.Cfg.Port_max) {
-			udps.ip_loop_id.port = config.Cfg.Port_min
+		if (uint32)(udps.Ip_loop_id.Port)+1 > (uint32)(config.Cfg.Port_max) {
+			udps.Ip_loop_id.Port = config.Cfg.Port_min
 		} else {
-			udps.ip_loop_id.port += 1
+			udps.Ip_loop_id.Port += 1
 		}
 	} else {
-		udps.ip_loop_id.dnsid += 1
+		udps.Ip_loop_id.Dnsid += 1
 	}
-	return udps.ip_loop_id.id, udps.ip_loop_id.port, udps.ip_loop_id.dnsid
+	return udps.Ip_loop_id.Id, udps.Ip_loop_id.Port, udps.Ip_loop_id.Dnsid
 }
 
 // this struct contains all relevant data to track the dns query & response
@@ -68,6 +68,7 @@ type Udp_scan_data_item struct {
 	Port             layers.UDPPort
 	Dnsid            uint16
 	Dns_recs         []layers.DNSResourceRecord
+	Raw_dns          []byte
 	Dns_payload_size int
 	Dns_flags        uint16
 	Ttl              int
@@ -144,7 +145,7 @@ func scan_item_to_strarr(scan_item *Udp_scan_data_item) []string {
 	return record
 }
 
-func (udps *Udp_scanner) send_dns(id uint32, dst_ip net.IP, src_port layers.UDPPort, dnsid uint16) {
+func (udps *Udp_scanner) Send_dns(id uint32, dst_ip net.IP, src_port layers.UDPPort, dnsid uint16) {
 	// generate sequence number based on the first 21 bits of the hash
 	logging.Println(6, "Send", dst_ip, "port=", src_port, "dnsid=", dnsid)
 	// check for sequence number collisions
@@ -162,6 +163,7 @@ func (udps *Udp_scanner) send_dns(id uint32, dst_ip net.IP, src_port layers.UDPP
 	udps.Scan_data.Mu.Unlock()
 
 	l3, l4, payload := udps.Build_dns(dst_ip, src_port, dnsid, config.Cfg.Dns_query)
+
 	if ipv4, ok := l3.(*layers.IPv4); ok {
 		udps.Send_udp_pkt(*ipv4, l4, payload)
 		return
@@ -194,7 +196,7 @@ func (udps *Udp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 			logging.Println(5, "Handle-Pkt", "DNS not found")
 			return
 		}
-		logging.Println(5, "Handle-Pkt", "got DNS response from", net.IP(ip.NetworkFlow().Src().String()).String(), "port", udp.DstPort, "id", dns.ID)
+		logging.Println(5, "Handle-Pkt", "got DNS response from", net.IP(ip.NetworkFlow().Src().Raw()).String(), "port", udp.DstPort, "id", dns.ID)
 		// check if item in map and assign value
 		udps.Scan_data.Mu.Lock()
 		scan_item, ok := udps.Scan_data.Items[udp_scan_item_key{udp.DstPort, dns.ID}]
@@ -208,8 +210,9 @@ func (udps *Udp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 		if !ok {
 			log.Fatal("cast failed, wrong type")
 		}
-		udp_scan_item.Answerip = net.IP(ip.NetworkFlow().Src().Raw())
+		udp_scan_item.Answerip = net.IP(ip.NetworkFlow().Dst().Raw())
 		udp_scan_item.Ts_resp = time.Now()
+		udp_scan_item.Raw_dns = pld
 		if len(dns.Answers) != 0 {
 			udp_scan_item.Dns_recs = append(udp_scan_item.Dns_recs, dns.Answers...)
 			udp_scan_item.Ttl = (int)(dns.Answers[0].TTL)
@@ -241,12 +244,12 @@ func (udps *Udp_scanner) init_udp() {
 				logging.Println(4, nil, "excluding ip:", dst_ip)
 				continue
 			}
-			id, src_port, dns_id := udps.update_sync_init()
+			id, src_port, dns_id := udps.Update_sync_init()
 			logging.Println(5, "Send", "ip:", dst_ip, "id=", id, "port=", src_port, "dns_id=", dns_id)
 			if config.Cfg.Pkts_per_sec > 0 {
 				_ = udps.Send_limiter.Take()
 			}
-			udps.send_dns(id, dst_ip, layers.UDPPort(src_port), dns_id)
+			udps.Send_dns(id, dst_ip, layers.UDPPort(src_port), dns_id)
 		case <-udps.Stop_chan:
 			return
 		}
@@ -315,12 +318,12 @@ func (udps *Udp_scanner) Start_scan(args []string, outpath string) {
 	udps.L2_sender6 = &udps.L2_v6
 	udps.Scanner_methods = udps
 	udps.Base_methods = udps
-	udps.bound_sockets = []*net.UDPConn{}
+	udps.Bound_sockets = []*net.UDPConn{}
 	// synced between multiple init_udp()
-	udps.ip_loop_id = synced_init{
-		id:    0,
-		port:  config.Cfg.Port_min,
-		dnsid: 0,
+	udps.Ip_loop_id = Synced_init{
+		Id:    0,
+		Port:  config.Cfg.Port_min,
+		Dnsid: 0,
 	}
 
 	// write start ts to log
@@ -374,10 +377,10 @@ func (udps *Udp_scanner) Start_internal(nets []net.IP, hostsize int) []scanner.S
 	udps.Base_methods = udps
 	//udps.bound_sockets = []*net.UDPConn{}
 	// synced between multiple init_udp()
-	udps.ip_loop_id = synced_init{
-		id:    0,
-		port:  config.Cfg.Port_min,
-		dnsid: 0,
+	udps.Ip_loop_id = Synced_init{
+		Id:    0,
+		Port:  config.Cfg.Port_min,
+		Dnsid: 0,
 	}
 	udps.Send_limiter = ratelimiter.New(config.Cfg.Pkts_per_sec)
 

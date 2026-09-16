@@ -2,7 +2,10 @@ package qmin_scanner
 
 import (
 	"bufio"
-	"context"
+	"dns_tools/common"
+	"dns_tools/config"
+	"dns_tools/scanner"
+	udpscanner "dns_tools/scanner/udp"
 	"encoding/json"
 	"fmt"
 	"hash/crc32"
@@ -11,7 +14,6 @@ import (
 	"math"
 	"math/rand"
 	"net"
-	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -22,7 +24,7 @@ import (
 	"time"
 
 	"codeberg.org/miekg/dns"
-	"codeberg.org/miekg/dns/dnshttp"
+	"github.com/gopacket/gopacket/layers"
 	"github.com/parquet-go/parquet-go"
 )
 
@@ -173,51 +175,115 @@ func evalCommError(err error, server string) QueryResult {
 	return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 }
 
+/*
+func ConvertToDNSMsg(scan_item *udpscanner.Udp_scan_data_item) dns.Msg {
+		msg := layers.DNS{
+			ID: scan_item.Dnsid,
+			QR: true,
+			Questions: scan_item,
+		}
+		return nil
+	}
+*/
+
 func dnsQuery(domain string, server string, qType uint16, timeout time.Duration) QueryResult {
-	m := dns.NewMsg(domain, qType)
-	m.RecursionDesired = true
 
 	var res *dns.Msg
 	var err error
 
 	switch Cfg.Protocol {
-	case "udp", "tcp":
-		// increase UDP Buffer size
-		// some Resolver send too large packages
-		if Cfg.Protocol == "udp" {
-			m.UDPSize, m.Security = 4096, false
-		}
-		c := dns.NewClient()
-		c.ReadTimeout = timeout
-		c.WriteTimeout = timeout
+	case "udp":
+		var udps udpscanner.Udp_scanner
 
-		targetServer := net.JoinHostPort(server, strconv.Itoa(Cfg.Port))
-		res, _, err = c.Exchange(context.TODO(), m, Cfg.Protocol, targetServer)
+		config.Cfg.Dns_query_type = dns.TypeToString[qType]
+		config.Cfg.Pkts_per_sec = 10
+		config.Cfg.Iface_name = "enp7s0"
+		config.Cfg.Iface_ip = "192.168.188.85"
+		config.Cfg.Iface_ip6 = "2a00:fda0:2f4:ce00:a43d:a9a1:8e94:6886"
+		config.Cfg.Dst_port = 53
+		config.Cfg.Dnssec_enabled = false
+		config.Cfg.Log_dnsrecs = false
+		config.Cfg.EDNS0_enabled = true
+		config.Cfg.Port_min = 61440
+		config.Cfg.Port_max = 65535
+		config.Cfg.EDNS0_buffer_size = 4096
+		config.Cfg.Dns_query = domain[:len(domain)-1]
+
+		udps.Scanner_init_internal()
+		udps.Sender_init()
+		udps.L2_sender = &udps.L2_v4
+		udps.L2_sender6 = &udps.L2_v6
+		udps.Scanner_methods = &udps
+		udps.Base_methods = &udps
+		udps.Bound_sockets = []*net.UDPConn{}
+		// synced between multiple init_udp()
+		udps.Ip_loop_id = udpscanner.Synced_init{
+			Id:    0,
+			Port:  config.Cfg.Port_min,
+			Dnsid: 0,
+		}
+
+		handle := common.Get_ether_handle()
+		udps.Wg.Add(3)
+
+		go udps.Packet_capture(handle)
+		go udps.Timeout()
+		go udps.Close_handle(handle)
+
+		id, src_port, dns_id := udps.Update_sync_init()
+		// fmt.Println(5, "Send", "ip:", net.ParseIP(server), "id=", id, "port=", src_port, "dns_id=", dns_id)
+
+		if config.Cfg.Pkts_per_sec > 0 {
+			_ = udps.Send_limiter.Take()
+		}
+		udps.Send_dns(id, net.ParseIP(server), layers.UDPPort(src_port), dns_id)
+
+		var scan_item *scanner.Scan_data_item
+		select {
+		case item := <-udps.Write_chan:
+			scan_item = item
+		case <-time.After(timeout * 5):
+			scan_item = nil // no reply in time
+		}
+
+		close(udps.Stop_chan)
+		udps.Wg.Wait()
+
+		if scan_item != nil {
+			if item, ok := (*scan_item).(*udpscanner.Udp_scan_data_item); ok {
+				msg := new(dns.Msg)
+				msg.Data = item.Raw_dns
+				err = msg.Unpack()
+				res = msg
+			}
+		}
 	case "doh":
-		if !strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://") {
-			server = "https://" + server
-		}
-		var req *http.Request
-		req, err = dnshttp.NewRequest(http.MethodPost, server, m)
-		if err != nil {
-			log.Fatalln("Request build error:", err)
-		}
-		var resp *http.Response
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return evalCommError(err, server)
-		}
-		defer resp.Body.Close()
+		/*
+			if !strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://") {
+				server = "https://" + server
+			}
+			var req *http.Request
+			req, err = dnshttp.NewRequest(http.MethodPost, server, m)
+			if err != nil {
+				log.Fatalln("Request build error:", err)
+			}
+			var resp *http.Response
+			resp, err = http.DefaultClient.Do(req)
+			if err != nil {
+				return evalCommError(err, server)
+			}
+			defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "http status: " + strconv.Itoa(resp.StatusCode)}
-		}
+			if resp.StatusCode != http.StatusOK {
+				return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "http status: " + strconv.Itoa(resp.StatusCode)}
+			}
 
-		res, err = dnshttp.Response(resp)
-		if err != nil {
-			fmt.Println("Failed to parse HTTP response:", err)
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
-		}
+			res, err = dnshttp.Response(resp)
+			if err != nil {
+				fmt.Println("Failed to parse HTTP response:", err)
+				return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+			}
+		*/
 	default:
 		log.Fatalln("Wrong or unsupported protocol:", Cfg.Protocol)
 	}
@@ -342,13 +408,13 @@ func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth i
 				continue
 			}
 			wg.Add(1)
-			go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false)
-			wg.Add(1)
-			go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
-			wg.Add(1)
-			go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
-			wg.Add(1)
-			go nxOptiRoutine(res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)
+			go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false) /*
+				wg.Add(1)
+				go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
+				wg.Add(1)
+				go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, true)
+				wg.Add(1)
+				go nxOptiRoutine(res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg)*/
 		}
 		go func() {
 			wg.Wait()
