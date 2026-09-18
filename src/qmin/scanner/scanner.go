@@ -5,6 +5,7 @@ import (
 	"dns_tools/common"
 	"dns_tools/config"
 	"dns_tools/scanner"
+	tcpscanner "dns_tools/scanner/tcp"
 	udpscanner "dns_tools/scanner/udp"
 	"encoding/json"
 	"fmt"
@@ -114,6 +115,74 @@ type InputFileFormat struct {
 	// backend_resolver_uint32  uint32
 }
 
+type TcpScanner struct {
+	tcps tcpscanner.Tcp_scanner
+}
+
+func (s *TcpScanner) Setup() *TcpScanner {
+	tcps := &s.tcps
+
+	config.Cfg.Pkts_per_sec = 10
+	config.Cfg.Iface_name = "enp7s0"
+	config.Cfg.Iface_ip = "192.168.188.85"
+	config.Cfg.Iface_ip6 = "2a00:fda0:2bf:1000:79dc:dc36:f753:9c93"
+	config.Cfg.Dst_port = 53
+	config.Cfg.Dnssec_enabled = false
+	config.Cfg.Log_dnsrecs = false
+	config.Cfg.EDNS0_enabled = true
+	tcps.Scanner_init()
+	tcps.Sender_init()
+	tcps.L2_sender = &tcps.L2_v4
+	tcps.L2_sender6 = &tcps.L2_v6
+	tcps.Scanner_methods = tcps
+	tcps.Base_methods = tcps
+	tcps.Set_iptable_rule()
+
+	handle := common.Get_ether_handle()
+
+	tcps.Wg.Add(3)
+
+	go tcps.Packet_capture(handle)
+	go tcps.Timeout()
+	go tcps.Close_handle(handle)
+
+	return s
+}
+
+func (s *TcpScanner) Teardown() {
+
+	close(s.tcps.Stop_chan)
+	s.tcps.Wg.Wait()
+	s.tcps.Remove_iptable_rule()
+}
+
+func (s *TcpScanner) Resolve(domain string, target net.IP, qType uint16, timeout time.Duration) (*dns.Msg, error) {
+	// need to remove root-zone indicator dot (".") as the dns payload will be packed wrongly with it present
+	domain = strings.TrimSuffix(domain, ".")
+	_, _, dns_payload := s.tcps.Build_ack_with_dns(net.ParseIP("0.0.0.0"), 0, 0, 0, domain, dns.TypeToString[qType])
+	s.tcps.DNS_PAYLOAD_SIZE = uint16(len(dns_payload))
+
+	id := s.tcps.Get_next_id()
+	if config.Cfg.Pkts_per_sec > 0 {
+		_ = s.tcps.Send_limiter.Take()
+	}
+
+	s.tcps.Send_syn(id, target, domain, dns.TypeToString[qType])
+
+	select {
+	case item := <-s.tcps.Write_chan:
+		if scan_item, ok := (*item).(*tcpscanner.Tcp_scan_data_item); ok {
+			msg := new(dns.Msg)
+			msg.Data = scan_item.Next.Next.Raw_dns
+			err := msg.Unpack()
+			return msg, err
+		}
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("timout")
+	}
+	panic("Houston, we have a problem. This should be impossible. \n No but really you should not me able to reach this point.")
+}
+
 var responsePattern = `^(?:[0-9]+(?:\.[0-9]+)*_[A-Za-z0-9]+\|)*[0-9]+(?:\.[0-9]+)*\.[0-9A-Fa-f]{8}-[0-9]+-[^-|_]+(?:-(?:inducation|qmin_mode|nxopti))?_[A-Za-z0-9]+$`
 var reg = regexp.MustCompile(responsePattern)
 
@@ -175,17 +244,6 @@ func evalCommError(err error, server string) QueryResult {
 	return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 }
 
-/*
-func ConvertToDNSMsg(scan_item *udpscanner.Udp_scan_data_item) dns.Msg {
-		msg := layers.DNS{
-			ID: scan_item.Dnsid,
-			QR: true,
-			Questions: scan_item,
-		}
-		return nil
-	}
-*/
-
 func dnsQuery(domain string, server string, qType uint16, timeout time.Duration) QueryResult {
 
 	var res *dns.Msg
@@ -242,7 +300,7 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		select {
 		case item := <-udps.Write_chan:
 			scan_item = item
-		case <-time.After(timeout * 5):
+		case <-time.After(timeout):
 			scan_item = nil // no reply in time
 		}
 
@@ -256,7 +314,20 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 				err = msg.Unpack()
 				res = msg
 			}
+		} else {
+			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 3, Res: "timeout"}
 		}
+	case "tcp":
+		tcpscan := &TcpScanner{}
+		tcpscan.Setup()
+
+		res, err := tcpscan.Resolve(domain, net.ParseIP(server), qType, timeout)
+		fmt.Println(res)
+		fmt.Println(err)
+
+		tcpscan.Teardown()
+		panic("stop")
+
 	case "doh":
 		/*
 			if !strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://") {

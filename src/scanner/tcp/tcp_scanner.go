@@ -7,6 +7,7 @@ import (
 	"dns_tools/generator"
 	"dns_tools/logging"
 	"dns_tools/scanner"
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
@@ -34,24 +35,27 @@ type Tcp_scanner struct {
  */
 
 // this struct contains all relevant data to track the tcp connection
-type tcp_scan_data_item struct {
-	id       uint32
-	ts       time.Time
-	ip       net.IP
-	port     layers.TCPPort
-	seq      uint32
-	ack      uint32
-	flags    tcp_common.TCP_flags
-	dns_recs []net.IP
-	Next     *tcp_scan_data_item
+type Tcp_scan_data_item struct {
+	Id       uint32
+	Ts       time.Time
+	Ip       net.IP
+	Port     layers.TCPPort
+	Seq      uint32
+	Ack      uint32
+	Flags    tcp_common.TCP_flags
+	Dns_recs []net.IP
+	Raw_dns  []byte
+	Next     *Tcp_scan_data_item
+	domain   string
+	qType    string
 }
 
-func (t *tcp_scan_data_item) Get_timestamp() time.Time {
-	return t.ts
+func (t *Tcp_scan_data_item) Get_timestamp() time.Time {
+	return t.Ts
 }
 
-func (item *tcp_scan_data_item) last() *tcp_scan_data_item {
-	var cur *tcp_scan_data_item = item
+func (item *Tcp_scan_data_item) last() *Tcp_scan_data_item {
+	var cur *Tcp_scan_data_item = item
 	for cur.Next != nil {
 		cur = cur.Next
 	}
@@ -84,7 +88,7 @@ func buildNetworkLayer(dst_ip net.IP) gopacket.NetworkLayer {
 	}
 }
 
-func (tcps *Tcp_scanner) Build_ack_with_dns(dst_ip net.IP, src_port layers.TCPPort, seq_num uint32, ack_num uint32) (gopacket.NetworkLayer, layers.TCP, []byte) {
+func (tcps *Tcp_scanner) Build_ack_with_dns(dst_ip net.IP, src_port layers.TCPPort, seq_num uint32, ack_num uint32, dns_query string, dns_query_type string) (gopacket.NetworkLayer, layers.TCP, []byte) {
 	// === build packet ===
 	ip := buildNetworkLayer(dst_ip)
 
@@ -100,10 +104,20 @@ func (tcps *Tcp_scanner) Build_ack_with_dns(dst_ip net.IP, src_port layers.TCPPo
 	}
 	tcp.SetNetworkLayerForChecksum(ip)
 
+	var dns_type uint16
+	switch dns_query_type {
+	case "A":
+		dns_type = uint16(layers.DNSTypeA)
+	case "TXT":
+		dns_type = uint16(layers.DNSTypeTXT)
+	default:
+		panic("unsupported DNS type")
+	}
+
 	// create dns layers
 	qst := layers.DNSQuestion{
-		Name:  []byte(config.Cfg.Dns_query),
-		Type:  layers.DNSTypeA,
+		Name:  []byte(dns_query),
+		Type:  layers.DNSType(dns_type),
 		Class: layers.DNSClassIN,
 	}
 	dns := layers.DNS{
@@ -127,8 +141,8 @@ func (tcps *Tcp_scanner) Build_ack_with_dns(dst_ip net.IP, src_port layers.TCPPo
 	return ip, tcp, dns_corrected
 }
 
-func (tcps *Tcp_scanner) Send_ack_with_dns(dst_ip net.IP, src_port layers.TCPPort, seq_num uint32, ack_num uint32) {
-	l3, l4, payload := tcps.Build_ack_with_dns(dst_ip, src_port, seq_num, ack_num)
+func (tcps *Tcp_scanner) Send_ack_with_dns(dst_ip net.IP, src_port layers.TCPPort, seq_num uint32, ack_num uint32, dns_query string, dns_query_type string) {
+	l3, l4, payload := tcps.Build_ack_with_dns(dst_ip, src_port, seq_num, ack_num, dns_query, dns_query_type)
 	if ipv6, ok := l3.(*layers.IPv6); ok {
 		tcps.Send_tcp_pkt_v6(*ipv6, l4, payload)
 		return
@@ -138,36 +152,36 @@ func (tcps *Tcp_scanner) Send_ack_with_dns(dst_ip net.IP, src_port layers.TCPPor
 	}
 }
 
-func scan_item_to_strarr(scan_item *tcp_scan_data_item) []string {
+func scan_item_to_strarr(scan_item *Tcp_scan_data_item) []string {
 	// transform scan_item into string array for csv writer
 	var record []string
-	record = append(record, strconv.Itoa(int(scan_item.id)))
-	record = append(record, scan_item.ts.UTC().Format("2006-01-02 15:04:05.000000"))
-	record = append(record, scan_item.ip.String())
-	record = append(record, scan_item.port.String())
-	record = append(record, strconv.Itoa(int(scan_item.seq)))
-	record = append(record, strconv.Itoa(int(scan_item.ack)))
+	record = append(record, strconv.Itoa(int(scan_item.Id)))
+	record = append(record, scan_item.Ts.UTC().Format("2006-01-02 15:04:05.000000"))
+	record = append(record, scan_item.Ip.String())
+	record = append(record, scan_item.Port.String())
+	record = append(record, strconv.Itoa(int(scan_item.Seq)))
+	record = append(record, strconv.Itoa(int(scan_item.Ack)))
 	var flags string
-	if scan_item.flags.SYN {
+	if scan_item.Flags.SYN {
 		flags += "S"
 	}
-	if scan_item.flags.RST {
+	if scan_item.Flags.RST {
 		flags += "R"
 	}
-	if scan_item.flags.FIN {
+	if scan_item.Flags.FIN {
 		flags += "F"
 	}
-	if scan_item.flags.PSH {
+	if scan_item.Flags.PSH {
 		flags += "P"
 	}
-	if scan_item.flags.ACK {
+	if scan_item.Flags.ACK {
 		flags += "A"
 	}
 	record = append(record, flags)
 	dns_answers := ""
-	for i, dns_ip := range scan_item.dns_recs {
+	for i, dns_ip := range scan_item.Dns_recs {
 		dns_answers += dns_ip.String()
-		if i != len(scan_item.dns_recs)-1 {
+		if i != len(scan_item.Dns_recs)-1 {
 			dns_answers += ","
 		}
 	}
@@ -176,7 +190,7 @@ func scan_item_to_strarr(scan_item *tcp_scan_data_item) []string {
 }
 
 func (tcps *Tcp_scanner) Write_item(root_item *scanner.Scan_data_item) {
-	tcp_root_item, ok := (*root_item).(*tcp_scan_data_item)
+	tcp_root_item, ok := (*root_item).(*Tcp_scan_data_item)
 	if !ok {
 		return
 	}
@@ -188,7 +202,7 @@ func (tcps *Tcp_scanner) Write_item(root_item *scanner.Scan_data_item) {
 	}
 	// remove entry from map
 	tcps.Scan_data.Mu.Lock()
-	delete(tcps.Scan_data.Items, tcp_scan_item_key{tcp_root_item.port, tcp_root_item.seq})
+	delete(tcps.Scan_data.Items, tcp_scan_item_key{tcp_root_item.Port, tcp_root_item.Seq})
 	tcps.Scan_data.Mu.Unlock()
 }
 
@@ -219,7 +233,7 @@ func (tcps *Tcp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 			if !ok {
 				return
 			}
-			tcp_root_data_item, ok := _root_data_item.(*tcp_scan_data_item)
+			tcp_root_data_item, ok := _root_data_item.(*Tcp_scan_data_item)
 			if !ok {
 				log.Fatal("cast failed, wrong type")
 			}
@@ -228,14 +242,14 @@ func (tcps *Tcp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 			if last_data_item != tcp_root_data_item {
 				return
 			}
-			data := tcp_scan_data_item{
-				id:   last_data_item.id,
-				ts:   time.Now(),
-				port: tcp_l.DstPort,
-				seq:  tcp_l.Seq,
-				ack:  tcp_l.Ack,
-				ip:   net.IP(ip.NetworkFlow().Src().Raw()),
-				flags: tcp_common.TCP_flags{
+			data := Tcp_scan_data_item{
+				Id:   last_data_item.Id,
+				Ts:   time.Now(),
+				Port: tcp_l.DstPort,
+				Seq:  tcp_l.Seq,
+				Ack:  tcp_l.Ack,
+				Ip:   net.IP(ip.NetworkFlow().Src().Raw()),
+				Flags: tcp_common.TCP_flags{
 					FIN: tcp_l.FIN,
 					SYN: tcp_l.SYN,
 					RST: tcp_l.RST,
@@ -244,7 +258,7 @@ func (tcps *Tcp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 				},
 			}
 			last_data_item.Next = &data
-			tcps.Send_ack_with_dns(tcp_root_data_item.ip, tcp_l.DstPort, tcp_l.Seq, tcp_l.Ack)
+			tcps.Send_ack_with_dns(tcp_root_data_item.Ip, tcp_l.DstPort, tcp_l.Seq, tcp_l.Ack, tcp_root_data_item.domain, tcp_root_data_item.qType)
 		} else
 		// FIN-ACK
 		if tcpflags.Is_FIN_ACK() {
@@ -255,19 +269,19 @@ func (tcps *Tcp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 			if !ok {
 				return
 			}
-			tcp_root_data_item, ok := _root_data_item.(*tcp_scan_data_item)
+			tcp_root_data_item, ok := _root_data_item.(*Tcp_scan_data_item)
 			if !ok {
 				log.Fatal("cast failed, wrong type")
 			}
 
 			last_data_item := tcp_root_data_item.last()
-			if !(last_data_item.flags.Is_PSH_ACK()) {
+			if !(last_data_item.Flags.Is_PSH_ACK()) {
 				logging.Println(5, nil, "missing PSH-ACK, dropping")
 				tcps.Send_ack_pos_fin(net.IP(ip.NetworkFlow().Src().Raw()), tcp_l.DstPort, tcp_l.Seq, tcp_l.Ack, true)
 				return
 			}
 			logging.Println(5, nil, "ACKing FIN-ACK")
-			tcps.Send_ack_pos_fin(tcp_root_data_item.ip, tcp_l.DstPort, tcp_l.Seq, tcp_l.Ack, false)
+			tcps.Send_ack_pos_fin(tcp_root_data_item.Ip, tcp_l.DstPort, tcp_l.Seq, tcp_l.Ack, false)
 			var switcheroo scanner.Scan_data_item = tcp_root_data_item
 			tcps.Write_chan <- &switcheroo
 		}
@@ -296,7 +310,7 @@ func (tcps *Tcp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 			logging.Println(5, nil, "DNS not found")
 			return
 		}
-		logging.Println(4, nil, "got DNS response")
+		fmt.Println(4, nil, "got DNS response")
 		// check if item in map and assign value
 		tcps.Scan_data.Mu.Lock()
 		_root_data_item, ok := tcps.Scan_data.Items[tcp_scan_item_key{tcp_l.DstPort, tcp_l.Ack - 1 - uint32(tcps.DNS_PAYLOAD_SIZE)}]
@@ -304,17 +318,17 @@ func (tcps *Tcp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 		if !ok {
 			return
 		}
-		tcp_root_data_item, ok := _root_data_item.(*tcp_scan_data_item)
+		tcp_root_data_item, ok := _root_data_item.(*Tcp_scan_data_item)
 		if !ok {
 			log.Fatal("cast failed, wrong type")
 		}
 		last_data_item := tcp_root_data_item.last()
 		// this should not occur, this would be the case if a psh-ack is being received more than once
-		if last_data_item.flags.Is_PSH_ACK() {
+		if last_data_item.Flags.Is_PSH_ACK() {
 			logging.Println(5, nil, "already received PSH-ACK")
 			return
 		}
-		if !(last_data_item.flags.Is_SYN_ACK()) {
+		if !(last_data_item.Flags.Is_SYN_ACK()) {
 			logging.Println(5, nil, "missing SYN-ACK")
 			return
 		}
@@ -324,30 +338,33 @@ func (tcps *Tcp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 			if answer.IP != nil {
 				answers_ip = append(answers_ip, answer.IP)
 				logging.Println(6, nil, answer.IP)
+			} else if answer.TXT != nil {
+				fmt.Println(4, nil, "found TXT response")
 			} else {
-				logging.Println(5, nil, "non IP type found in answer")
+				fmt.Println(5, nil, "non IP/ TXT type found in answer")
 				return
 			}
 		}
-		data := tcp_scan_data_item{
-			id:   last_data_item.id,
-			ts:   time.Now(),
-			port: tcp_l.DstPort,
-			seq:  tcp_l.Seq,
-			ack:  tcp_l.Ack,
-			ip:   net.IP(ip.NetworkFlow().Src().Raw()),
-			flags: tcp_common.TCP_flags{
+		data := Tcp_scan_data_item{
+			Id:   last_data_item.Id,
+			Ts:   time.Now(),
+			Port: tcp_l.DstPort,
+			Seq:  tcp_l.Seq,
+			Ack:  tcp_l.Ack,
+			Ip:   net.IP(ip.NetworkFlow().Src().Raw()),
+			Flags: tcp_common.TCP_flags{
 				FIN: tcp_l.FIN,
 				SYN: tcp_l.SYN,
 				RST: tcp_l.RST,
 				PSH: tcp_l.PSH,
 				ACK: tcp_l.ACK,
 			},
-			dns_recs: answers_ip,
+			Dns_recs: answers_ip,
+			Raw_dns:  pld,
 		}
 		last_data_item.Next = &data
 		// send FIN-ACK to server
-		tcps.Send_ack_pos_fin(tcp_root_data_item.ip, tcp_l.DstPort, tcp_l.Seq, tcp_l.Ack, true)
+		tcps.Send_ack_pos_fin(tcp_root_data_item.Ip, tcp_l.DstPort, tcp_l.Seq, tcp_l.Ack, true)
 		// if this pkt is fin-psh-ack we will remove it from the map at this point already
 		// because we wont receive any further fin-ack from the server
 		if tcpflags.Is_FIN_PSH_ACK() {
@@ -356,31 +373,34 @@ func (tcps *Tcp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 	}
 }
 
-func (tcps *Tcp_scanner) send_syn(id uint32, dst_ip net.IP) {
+func (tcps *Tcp_scanner) Send_syn(id uint32, dst_ip net.IP, domain string, qType string) {
 	// generate sequence number based on the first 21 bits of the id
 	seq := (id & 0x1FFFFF) * 2048
 	port := layers.TCPPort((id >> 21) + 61440)
 	logging.Println(6, nil, "sending syn to", dst_ip, "with seq_num=", seq)
 	// check for sequence number collisions
 	tcps.Scan_data.Mu.Lock()
-	s_d_item := tcp_scan_data_item{
-		id:   id,
-		ts:   time.Now(),
-		ip:   dst_ip,
-		port: port,
-		seq:  seq,
-		ack:  0,
-		flags: tcp_common.TCP_flags{
+	s_d_item := Tcp_scan_data_item{
+		Id:   id,
+		Ts:   time.Now(),
+		Ip:   dst_ip,
+		Port: port,
+		Seq:  seq,
+		Ack:  0,
+		Flags: tcp_common.TCP_flags{
 			FIN: false,
 			ACK: false,
 			RST: false,
 			PSH: false,
 			SYN: true,
 		},
-		dns_recs: nil,
+		Dns_recs: nil,
 		Next:     nil,
+		domain:   domain,
+		qType:    qType,
 	}
 	logging.Println(6, nil, "scan_data=", s_d_item)
+
 	tcps.Scan_data.Items[tcp_scan_item_key{port, seq}] = &s_d_item
 	tcps.Scan_data.Mu.Unlock()
 
@@ -417,7 +437,7 @@ var ip_loop_id u32id = u32id{
 	id: 0,
 }
 
-func (tcps *Tcp_scanner) get_next_id() uint32 {
+func (tcps *Tcp_scanner) Get_next_id() uint32 {
 	ip_loop_id.mu.Lock()
 	defer ip_loop_id.mu.Unlock()
 	last_id := ip_loop_id.id
@@ -442,12 +462,12 @@ func (tcps *Tcp_scanner) init_tcp() {
 				logging.Println(4, nil, "excluding ip:", dst_ip)
 				continue
 			}
-			id := tcps.get_next_id()
+			id := tcps.Get_next_id()
 			logging.Println(6, nil, "ip:", dst_ip, id)
 			if config.Cfg.Pkts_per_sec > 0 {
 				_ = tcps.Send_limiter.Take()
 			}
-			tcps.send_syn(id, dst_ip)
+			tcps.Send_syn(id, dst_ip, config.Cfg.Dns_query, config.Cfg.Dns_query_type)
 		case <-tcps.Stop_chan:
 			return
 		}
@@ -510,7 +530,7 @@ func (tcps *Tcp_scanner) Start_scan(args []string, outpath string) {
 	fname, netip, hostsize = common.Get_cidr_filename(args[0])
 
 	// set the DNS_PAYLOAD_SIZE once as it is static
-	_, _, dns_payload := tcps.Build_ack_with_dns(net.ParseIP("0.0.0.0"), 0, 0, 0)
+	_, _, dns_payload := tcps.Build_ack_with_dns(net.ParseIP("0.0.0.0"), 0, 0, 0, config.Cfg.Dns_query, config.Cfg.Dns_query_type)
 	tcps.DNS_PAYLOAD_SIZE = uint16(len(dns_payload))
 	handle := common.Get_ether_handle()
 	// start packet capture as goroutine
