@@ -145,7 +145,7 @@ func scan_item_to_strarr(scan_item *Udp_scan_data_item) []string {
 	return record
 }
 
-func (udps *Udp_scanner) Send_dns(id uint32, dst_ip net.IP, src_port layers.UDPPort, dnsid uint16) {
+func (udps *Udp_scanner) Send_dns(id uint32, dst_ip net.IP, src_port layers.UDPPort, dnsid uint16, domain string) {
 	// generate sequence number based on the first 21 bits of the hash
 	logging.Println(6, "Send", dst_ip, "port=", src_port, "dnsid=", dnsid)
 	// check for sequence number collisions
@@ -162,7 +162,7 @@ func (udps *Udp_scanner) Send_dns(id uint32, dst_ip net.IP, src_port layers.UDPP
 	udps.Scan_data.Items[udp_scan_item_key{src_port, dnsid}] = &s_d_item
 	udps.Scan_data.Mu.Unlock()
 
-	l3, l4, payload := udps.Build_dns(dst_ip, src_port, dnsid, config.Cfg.Dns_query)
+	l3, l4, payload := udps.Build_dns(dst_ip, src_port, dnsid, domain)
 
 	if ipv4, ok := l3.(*layers.IPv4); ok {
 		udps.Send_udp_pkt(*ipv4, l4, payload)
@@ -249,7 +249,7 @@ func (udps *Udp_scanner) init_udp() {
 			if config.Cfg.Pkts_per_sec > 0 {
 				_ = udps.Send_limiter.Take()
 			}
-			udps.Send_dns(id, dst_ip, layers.UDPPort(src_port), dns_id)
+			udps.Send_dns(id, dst_ip, layers.UDPPort(src_port), dns_id, config.Cfg.Dns_query)
 		case <-udps.Stop_chan:
 			return
 		}

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"dns_tools/common"
 	"dns_tools/config"
-	"dns_tools/scanner"
 	tcpscanner "dns_tools/scanner/tcp"
 	udpscanner "dns_tools/scanner/udp"
 	"encoding/json"
@@ -183,6 +182,80 @@ func (s *TcpScanner) Resolve(domain string, target net.IP, qType uint16, timeout
 	panic("Houston, we have a problem. This should be impossible. \n No but really you should not me able to reach this point.")
 }
 
+type UdpScanner struct {
+	udps udpscanner.Udp_scanner
+}
+
+func (s *UdpScanner) Setup() *UdpScanner {
+
+	udps := &s.udps
+	config.Cfg.Pkts_per_sec = 10
+	config.Cfg.Iface_name = "enp7s0"
+	config.Cfg.Iface_ip = "192.168.188.85"
+	config.Cfg.Iface_ip6 = "2a00:fda0:2bf:1000:79dc:dc36:f753:9c93"
+	config.Cfg.Dst_port = 53
+	config.Cfg.Dnssec_enabled = false
+	config.Cfg.Log_dnsrecs = false
+	config.Cfg.EDNS0_enabled = true
+	config.Cfg.Port_min = 61440
+	config.Cfg.Port_max = 65535
+	config.Cfg.EDNS0_buffer_size = 4096
+	config.Cfg.Dns_query_type = "TXT"
+
+	udps.Scanner_init_internal()
+	udps.Sender_init()
+	udps.L2_sender = &udps.L2_v4
+	udps.L2_sender6 = &udps.L2_v6
+	udps.Scanner_methods = udps
+	udps.Base_methods = udps
+	udps.Bound_sockets = []*net.UDPConn{}
+	// synced between multiple init_udp()
+	udps.Ip_loop_id = udpscanner.Synced_init{
+		Id:    0,
+		Port:  config.Cfg.Port_min,
+		Dnsid: 0,
+	}
+
+	handle := common.Get_ether_handle()
+	udps.Wg.Add(3)
+
+	go udps.Packet_capture(handle)
+	go udps.Timeout()
+	go udps.Close_handle(handle)
+
+	return s
+}
+
+func (s *UdpScanner) Resolve(domain string, target net.IP, qType uint16, timeout time.Duration) (*dns.Msg, error) {
+	domain = strings.TrimSuffix(domain, ".")
+	id, src_port, dns_id := s.udps.Update_sync_init()
+	// fmt.Println(5, "Send", "ip:", net.ParseIP(server), "id=", id, "port=", src_port, "dns_id=", dns_id)
+
+	if config.Cfg.Pkts_per_sec > 0 {
+		_ = s.udps.Send_limiter.Take()
+	}
+	s.udps.Send_dns(id, target, layers.UDPPort(src_port), dns_id, domain)
+
+	select {
+	case item := <-s.udps.Write_chan:
+		if i, ok := (*item).(*udpscanner.Udp_scan_data_item); ok {
+			msg := new(dns.Msg)
+			msg.Data = i.Raw_dns
+			err := msg.Unpack()
+			return msg, err
+		}
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("timeout") // no reply in time
+	}
+	panic("Houston, we have a problem. This should be impossible. \n No but really you should not me able to reach this point.")
+
+}
+
+func (s *UdpScanner) Teardown() {
+	close(s.udps.Stop_chan)
+	s.udps.Wg.Wait()
+}
+
 var responsePattern = `^(?:[0-9]+(?:\.[0-9]+)*_[A-Za-z0-9]+\|)*[0-9]+(?:\.[0-9]+)*\.[0-9A-Fa-f]{8}-[0-9]+-[^-|_]+(?:-(?:inducation|qmin_mode|nxopti))?_[A-Za-z0-9]+$`
 var reg = regexp.MustCompile(responsePattern)
 
@@ -251,72 +324,16 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 
 	switch Cfg.Protocol {
 	case "udp":
-		var udps udpscanner.Udp_scanner
+		udpscan := &UdpScanner{}
+		udpscan.Setup()
 
-		config.Cfg.Dns_query_type = dns.TypeToString[qType]
-		config.Cfg.Pkts_per_sec = 10
-		config.Cfg.Iface_name = "enp7s0"
-		config.Cfg.Iface_ip = "192.168.188.85"
-		config.Cfg.Iface_ip6 = "2a00:fda0:2f4:ce00:a43d:a9a1:8e94:6886"
-		config.Cfg.Dst_port = 53
-		config.Cfg.Dnssec_enabled = false
-		config.Cfg.Log_dnsrecs = false
-		config.Cfg.EDNS0_enabled = true
-		config.Cfg.Port_min = 61440
-		config.Cfg.Port_max = 65535
-		config.Cfg.EDNS0_buffer_size = 4096
-		config.Cfg.Dns_query = domain[:len(domain)-1]
+		res, err := udpscan.Resolve(domain, net.ParseIP(server), qType, timeout)
+		fmt.Println(res)
+		fmt.Println(err)
 
-		udps.Scanner_init_internal()
-		udps.Sender_init()
-		udps.L2_sender = &udps.L2_v4
-		udps.L2_sender6 = &udps.L2_v6
-		udps.Scanner_methods = &udps
-		udps.Base_methods = &udps
-		udps.Bound_sockets = []*net.UDPConn{}
-		// synced between multiple init_udp()
-		udps.Ip_loop_id = udpscanner.Synced_init{
-			Id:    0,
-			Port:  config.Cfg.Port_min,
-			Dnsid: 0,
-		}
+		udpscan.Teardown()
+		panic("stop")
 
-		handle := common.Get_ether_handle()
-		udps.Wg.Add(3)
-
-		go udps.Packet_capture(handle)
-		go udps.Timeout()
-		go udps.Close_handle(handle)
-
-		id, src_port, dns_id := udps.Update_sync_init()
-		// fmt.Println(5, "Send", "ip:", net.ParseIP(server), "id=", id, "port=", src_port, "dns_id=", dns_id)
-
-		if config.Cfg.Pkts_per_sec > 0 {
-			_ = udps.Send_limiter.Take()
-		}
-		udps.Send_dns(id, net.ParseIP(server), layers.UDPPort(src_port), dns_id)
-
-		var scan_item *scanner.Scan_data_item
-		select {
-		case item := <-udps.Write_chan:
-			scan_item = item
-		case <-time.After(timeout):
-			scan_item = nil // no reply in time
-		}
-
-		close(udps.Stop_chan)
-		udps.Wg.Wait()
-
-		if scan_item != nil {
-			if item, ok := (*scan_item).(*udpscanner.Udp_scan_data_item); ok {
-				msg := new(dns.Msg)
-				msg.Data = item.Raw_dns
-				err = msg.Unpack()
-				res = msg
-			}
-		} else {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 3, Res: "timeout"}
-		}
 	case "tcp":
 		tcpscan := &TcpScanner{}
 		tcpscan.Setup()
