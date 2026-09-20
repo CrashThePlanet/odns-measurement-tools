@@ -124,7 +124,7 @@ func (s *TcpScanner) Setup() *TcpScanner {
 	config.Cfg.Pkts_per_sec = 10
 	config.Cfg.Iface_name = "enp7s0"
 	config.Cfg.Iface_ip = "192.168.188.85"
-	config.Cfg.Iface_ip6 = "2a00:fda0:2bf:1000:79dc:dc36:f753:9c93"
+	config.Cfg.Iface_ip6 = "2a00:fda0:2fd:4c00:6f0b:bd26:e909:d455"
 	config.Cfg.Dst_port = 53
 	config.Cfg.Dnssec_enabled = false
 	config.Cfg.Log_dnsrecs = false
@@ -192,7 +192,7 @@ func (s *UdpScanner) Setup() *UdpScanner {
 	config.Cfg.Pkts_per_sec = 10
 	config.Cfg.Iface_name = "enp7s0"
 	config.Cfg.Iface_ip = "192.168.188.85"
-	config.Cfg.Iface_ip6 = "2a00:fda0:2bf:1000:79dc:dc36:f753:9c93"
+	config.Cfg.Iface_ip6 = "2a00:fda0:2fd:4c00:6f0b:bd26:e909:d455"
 	config.Cfg.Dst_port = 53
 	config.Cfg.Dnssec_enabled = false
 	config.Cfg.Log_dnsrecs = false
@@ -304,7 +304,7 @@ func domainAssembly(dnsServer string, tokenDepth int, induction bool, qmin_mode 
 }
 
 func evalCommError(err error, server string) QueryResult {
-	if strings.Contains(err.Error(), "i/o timeout") {
+	if strings.Contains(err.Error(), "timeout") {
 		return QueryResult{resolverIP: server, requestingIP: "NONE", status: 3, Res: "timeout"}
 	}
 	if strings.Contains(err.Error(), "connection refused") {
@@ -317,33 +317,23 @@ func evalCommError(err error, server string) QueryResult {
 	return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 }
 
-func dnsQuery(domain string, server string, qType uint16, timeout time.Duration) QueryResult {
+func dnsQuery(domain string, server string, qType uint16, timeout time.Duration, tcpscan *TcpScanner, udpscan *UdpScanner) QueryResult {
 
 	var res *dns.Msg
 	var err error
 
 	switch Cfg.Protocol {
 	case "udp":
-		udpscan := &UdpScanner{}
-		udpscan.Setup()
-
-		res, err := udpscan.Resolve(domain, net.ParseIP(server), qType, timeout)
-		fmt.Println(res)
-		fmt.Println(err)
-
-		udpscan.Teardown()
-		panic("stop")
+		if udpscan == nil {
+			panic("UDP Scanner not setup")
+		}
+		res, err = udpscan.Resolve(domain, net.ParseIP(server), qType, timeout)
 
 	case "tcp":
-		tcpscan := &TcpScanner{}
-		tcpscan.Setup()
-
-		res, err := tcpscan.Resolve(domain, net.ParseIP(server), qType, timeout)
-		fmt.Println(res)
-		fmt.Println(err)
-
-		tcpscan.Teardown()
-		panic("stop")
+		if tcpscan == nil {
+			panic("TCP Scanner not setup")
+		}
+		res, err = tcpscan.Resolve(domain, net.ParseIP(server), qType, timeout)
 
 	case "doh":
 		/*
@@ -418,15 +408,15 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 	return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "noTXTResponse"}
 }
 
-func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool) {
+func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, induction bool, qmin_mode bool, tcpscan *TcpScanner, udpscan *UdpScanner) {
 	server := resolver.Queried_ip
 	defer wg.Done()
 	requestedDomain := domainAssembly(server, tokenDepth, induction, qmin_mode, false)
-	res := dnsQuery(requestedDomain, server, qType, timeout)
+	res := dnsQuery(requestedDomain, server, qType, timeout, tcpscan, udpscan)
 	// if timeout retry wiht longer timeout
 	if res.status == 3 {
 		requestedDomain = domainAssembly(server, tokenDepth, induction, qmin_mode, false)
-		res = dnsQuery(requestedDomain, server, qType, retryTimeout)
+		res = dnsQuery(requestedDomain, server, qType, retryTimeout, tcpscan, udpscan)
 	}
 	res.ResolverType = resolver.Resolver_type
 	res.qmin_mode = qmin_mode
@@ -436,7 +426,7 @@ func dnsQueryRoutine(tokenDepth int, resolver InputFileFormat, timeout time.Dura
 	ch <- res
 }
 
-func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup) {
+func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout time.Duration, qType uint16, ch chan<- QueryResult, wg *sync.WaitGroup, tcpscan *TcpScanner, udpscan *UdpScanner) {
 	defer wg.Done()
 	server := resolver.Queried_ip
 
@@ -444,10 +434,10 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 	d1 := "a." + domain
 	d2 := "b." + domain
 
-	res := dnsQuery(d1, server, qType, timeout)
+	res := dnsQuery(d1, server, qType, timeout, tcpscan, udpscan)
 
 	if res.status == 3 {
-		res = dnsQuery(d1, server, qType, retryTimeout)
+		res = dnsQuery(d1, server, qType, retryTimeout, tcpscan, udpscan)
 	}
 	res.qmin_mode = false
 	res.induction = false
@@ -459,9 +449,9 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 		return
 	}
 
-	res2 := dnsQuery(d2, server, qType, timeout)
+	res2 := dnsQuery(d2, server, qType, timeout, tcpscan, udpscan)
 	if res2.status == 3 {
-		res2 = dnsQuery(d2, server, qType, retryTimeout)
+		res2 = dnsQuery(d2, server, qType, retryTimeout, tcpscan, udpscan)
 	}
 	res2.qmin_mode = false
 	res2.induction = false
@@ -485,6 +475,18 @@ func nxOptiRoutine(resolver InputFileFormat, timeout time.Duration, retryTimeout
 
 func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth int, rounds int, timeout time.Duration, retryTrimeout time.Duration, fileName string) {
 
+	var tcpscan *TcpScanner
+	var udpscan *UdpScanner
+
+	if Cfg.Protocol == "tcp" {
+		tcpscan = &TcpScanner{}
+		tcpscan.Setup()
+	}
+	if Cfg.Protocol == "udp" {
+		udpscan = &UdpScanner{}
+		udpscan.Setup()
+	}
+
 	for i := 0; i < rounds; i++ {
 		fmt.Println("round", i+1, "/", rounds)
 		ch := make(chan QueryResult)
@@ -496,7 +498,7 @@ func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth i
 				continue
 			}
 			wg.Add(1)
-			go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false) /*
+			go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, false, false, tcpscan, udpscan) /*
 				wg.Add(1)
 				go dnsQueryRoutine(tokenDepth, res, timeout, retryTrimeout, dns.TypeTXT, ch, &wg, true, false)
 				wg.Add(1)
@@ -525,6 +527,12 @@ func scanResolvers(resolver []InputFileFormat, tempFile *TempStore, tokenDepth i
 			}
 			tempFile.WriteSingle(resLine)
 		}
+	}
+	if tcpscan != nil {
+		tcpscan.Teardown()
+	}
+	if udpscan != nil {
+		udpscan.Teardown()
 	}
 }
 
