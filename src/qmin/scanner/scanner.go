@@ -121,14 +121,17 @@ type TcpScanner struct {
 func (s *TcpScanner) Setup() *TcpScanner {
 	tcps := &s.tcps
 
-	config.Cfg.Pkts_per_sec = 10
+	config.Cfg.Pkts_per_sec = 1000
 	config.Cfg.Iface_name = "enp7s0"
 	config.Cfg.Iface_ip = "192.168.188.85"
-	config.Cfg.Iface_ip6 = "2a00:fda0:2fd:4c00:6f0b:bd26:e909:d455"
+	config.Cfg.Iface_ip6 = "2a00:fda0:2b2:3000:e1d2:603d:9600:ac1a"
 	config.Cfg.Dst_port = 53
 	config.Cfg.Dnssec_enabled = false
 	config.Cfg.Log_dnsrecs = false
 	config.Cfg.EDNS0_enabled = true
+	config.Cfg.Verbosity = 6
+	config.Cfg.Port_min = 61440
+	config.Cfg.Port_max = 65535
 	tcps.Scanner_init()
 	tcps.Sender_init()
 	tcps.L2_sender = &tcps.L2_v4
@@ -158,26 +161,26 @@ func (s *TcpScanner) Teardown() {
 func (s *TcpScanner) Resolve(domain string, target net.IP, qType uint16, timeout time.Duration) (*dns.Msg, error) {
 	// need to remove root-zone indicator dot (".") as the dns payload will be packed wrongly with it present
 	domain = strings.TrimSuffix(domain, ".")
-	_, _, dns_payload := s.tcps.Build_ack_with_dns(net.ParseIP("0.0.0.0"), 0, 0, 0, domain, dns.TypeToString[qType])
-	s.tcps.DNS_PAYLOAD_SIZE = uint16(len(dns_payload))
+	// _, _, dns_payload := s.tcps.Build_ack_with_dns(net.ParseIP("0.0.0.0"), 0, 0, 0, domain, dns.TypeToString[qType])
+	// s.tcps.DNS_PAYLOAD_SIZE = uint16(len(dns_payload))
 
 	id := s.tcps.Get_next_id()
+	port := s.tcps.Get_next_port()
 	if config.Cfg.Pkts_per_sec > 0 {
 		_ = s.tcps.Send_limiter.Take()
 	}
 
-	s.tcps.Send_syn(id, target, domain, dns.TypeToString[qType])
+	done := make(chan *tcpscanner.Tcp_scan_data_item, 1)
+	s.tcps.Send_syn(id, port, target, domain, dns.TypeToString[qType], done)
 
 	select {
-	case item := <-s.tcps.Write_chan:
-		if scan_item, ok := (*item).(*tcpscanner.Tcp_scan_data_item); ok {
-			msg := new(dns.Msg)
-			msg.Data = scan_item.Next.Next.Raw_dns
-			err := msg.Unpack()
-			return msg, err
-		}
+	case item := <-done:
+		msg := new(dns.Msg)
+		msg.Data = item.Next.Next.Raw_dns
+		err := msg.Unpack()
+		return msg, err
 	case <-time.After(timeout):
-		return nil, fmt.Errorf("timout")
+		return nil, fmt.Errorf("timeout")
 	}
 	panic("Houston, we have a problem. This should be impossible. \n No but really you should not me able to reach this point.")
 }
@@ -192,7 +195,7 @@ func (s *UdpScanner) Setup() *UdpScanner {
 	config.Cfg.Pkts_per_sec = 10
 	config.Cfg.Iface_name = "enp7s0"
 	config.Cfg.Iface_ip = "192.168.188.85"
-	config.Cfg.Iface_ip6 = "2a00:fda0:2fd:4c00:6f0b:bd26:e909:d455"
+	config.Cfg.Iface_ip6 = "2a00:fda0:29e:e000:1c86:ba19:3af3:21e6"
 	config.Cfg.Dst_port = 53
 	config.Cfg.Dnssec_enabled = false
 	config.Cfg.Log_dnsrecs = false
