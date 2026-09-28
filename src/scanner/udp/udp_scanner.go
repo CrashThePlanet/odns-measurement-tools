@@ -72,6 +72,7 @@ type Udp_scan_data_item struct {
 	Dns_payload_size int
 	Dns_flags        uint16
 	Ttl              int
+	Done             chan *Udp_scan_data_item
 }
 
 func (u *Udp_scan_data_item) Get_timestamp() time.Time {
@@ -145,7 +146,7 @@ func scan_item_to_strarr(scan_item *Udp_scan_data_item) []string {
 	return record
 }
 
-func (udps *Udp_scanner) Send_dns(id uint32, dst_ip net.IP, src_port layers.UDPPort, dnsid uint16, domain string) {
+func (udps *Udp_scanner) Send_dns(id uint32, dst_ip net.IP, src_port layers.UDPPort, dnsid uint16, domain string, done chan *Udp_scan_data_item) {
 	// generate sequence number based on the first 21 bits of the hash
 	logging.Println(6, "Send", dst_ip, "port=", src_port, "dnsid=", dnsid)
 	// check for sequence number collisions
@@ -157,6 +158,7 @@ func (udps *Udp_scanner) Send_dns(id uint32, dst_ip net.IP, src_port layers.UDPP
 		Port:     src_port,
 		Dns_recs: []layers.DNSResourceRecord{},
 		Dnsid:    dnsid,
+		Done:     done,
 	}
 	logging.Println(6, "Send", "scan_data=", s_d_item)
 	udps.Scan_data.Items[udp_scan_item_key{src_port, dnsid}] = &s_d_item
@@ -171,6 +173,15 @@ func (udps *Udp_scanner) Send_dns(id uint32, dst_ip net.IP, src_port layers.UDPP
 	if ipv6, ok := l3.(*layers.IPv6); ok {
 		udps.Send_udp_pkt6(*ipv6, l4, payload)
 	}
+}
+
+func (udps *Udp_scanner) deliver(item *Udp_scan_data_item) {
+	if item.Done != nil {
+		item.Done <- item
+		return
+	}
+	var boxed scanner.Scan_data_item = item
+	udps.Write_chan <- &boxed
 }
 
 func (udps *Udp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packet) {
@@ -221,7 +232,7 @@ func (udps *Udp_scanner) Handle_pkt(ip gopacket.NetworkLayer, pkt gopacket.Packe
 		udp_scan_item.Dns_payload_size = len(udp.LayerPayload())
 		udps.Scan_data.Mu.Unlock()
 		// queue for writeout
-		udps.Write_chan <- &scan_item
+		udps.deliver(udp_scan_item)
 	} else {
 		logging.Println(6, "Handle-Pkt", "missing application data")
 	}
@@ -249,7 +260,7 @@ func (udps *Udp_scanner) init_udp() {
 			if config.Cfg.Pkts_per_sec > 0 {
 				_ = udps.Send_limiter.Take()
 			}
-			udps.Send_dns(id, dst_ip, layers.UDPPort(src_port), dns_id, config.Cfg.Dns_query)
+			udps.Send_dns(id, dst_ip, layers.UDPPort(src_port), dns_id, config.Cfg.Dns_query, nil)
 		case <-udps.Stop_chan:
 			return
 		}

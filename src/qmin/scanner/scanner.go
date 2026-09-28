@@ -132,6 +132,7 @@ func (s *TcpScanner) Setup() *TcpScanner {
 	config.Cfg.Verbosity = 6
 	config.Cfg.Port_min = 61440
 	config.Cfg.Port_max = 65535
+	config.Cfg.Verbosity = 4
 	tcps.Scanner_init()
 	tcps.Sender_init()
 	tcps.L2_sender = &tcps.L2_v4
@@ -182,7 +183,6 @@ func (s *TcpScanner) Resolve(domain string, target net.IP, qType uint16, timeout
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout")
 	}
-	panic("Houston, we have a problem. This should be impossible. \n No but really you should not me able to reach this point.")
 }
 
 type UdpScanner struct {
@@ -204,6 +204,7 @@ func (s *UdpScanner) Setup() *UdpScanner {
 	config.Cfg.Port_max = 65535
 	config.Cfg.EDNS0_buffer_size = 4096
 	config.Cfg.Dns_query_type = "TXT"
+	// config.Cfg.Verbosity = 6
 
 	udps.Scanner_init_internal()
 	udps.Sender_init()
@@ -237,21 +238,18 @@ func (s *UdpScanner) Resolve(domain string, target net.IP, qType uint16, timeout
 	if config.Cfg.Pkts_per_sec > 0 {
 		_ = s.udps.Send_limiter.Take()
 	}
-	s.udps.Send_dns(id, target, layers.UDPPort(src_port), dns_id, domain)
+	done := make(chan *udpscanner.Udp_scan_data_item)
+	s.udps.Send_dns(id, target, layers.UDPPort(src_port), dns_id, domain, done)
 
 	select {
-	case item := <-s.udps.Write_chan:
-		if i, ok := (*item).(*udpscanner.Udp_scan_data_item); ok {
-			msg := new(dns.Msg)
-			msg.Data = i.Raw_dns
-			err := msg.Unpack()
-			return msg, err
-		}
+	case item := <-done:
+		msg := new(dns.Msg)
+		msg.Data = item.Raw_dns
+		err := msg.Unpack()
+		return msg, err
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout") // no reply in time
 	}
-	panic("Houston, we have a problem. This should be impossible. \n No but really you should not me able to reach this point.")
-
 }
 
 func (s *UdpScanner) Teardown() {
