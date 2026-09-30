@@ -3,6 +3,7 @@ package qmin_scanner
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"hash/crc32"
@@ -173,6 +174,43 @@ func evalCommError(err error, server string) QueryResult {
 	return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
 }
 
+var dohClient = &http.Client{
+	Transport: &http.Transport{
+		ForceAttemptHTTP2:   true,
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     30 * time.Second,
+	},
+}
+
+func doDoHQuery(ctx context.Context, method, target string, m *dns.Msg) (*dns.Msg, int, error) {
+	req, err := dnshttp.NewRequest(method, target, m)
+	if err != nil {
+		return nil, 0, fmt.Errorf("build request: %w", err)
+	}
+	req = req.WithContext(ctx)
+	req.Header.Set("Accept", "application/dns-message")
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/dns-message")
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("http status %d", resp.StatusCode)
+	}
+
+	res, err := dnshttp.Response(resp) // body is still open here
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("parse response: %w", err)
+	}
+	return res, resp.StatusCode, nil
+}
+
 func dnsQuery(domain string, server string, qType uint16, timeout time.Duration) QueryResult {
 	m := dns.NewMsg(domain, qType)
 	m.RecursionDesired = true
@@ -197,27 +235,24 @@ func dnsQuery(domain string, server string, qType uint16, timeout time.Duration)
 		if !strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://") {
 			server = "https://" + server
 		}
-		var req *http.Request
-		req, err = dnshttp.NewRequest(http.MethodPost, server, m)
-		if err != nil {
-			log.Fatalln("Request build error:", err)
-		}
-		var resp *http.Response
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return evalCommError(err, server)
-		}
-		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: "http status: " + strconv.Itoa(resp.StatusCode)}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		res2, status, err2 := doDoHQuery(ctx, http.MethodPost, server, m)
+		switch status {
+		case http.StatusBadRequest, http.StatusMethodNotAllowed,
+			http.StatusUnsupportedMediaType, http.StatusNotImplemented:
+			res2, status, err2 = doDoHQuery(ctx, http.MethodGet, server, m)
 		}
 
-		res, err = dnshttp.Response(resp)
-		if err != nil {
-			fmt.Println("Failed to parse HTTP response:", err)
-			return QueryResult{resolverIP: server, requestingIP: "NONE", status: -1, Res: "unhandledError"}
+		if err2 != nil {
+			if status != 0 {
+				return QueryResult{resolverIP: server, requestingIP: "NONE", status: 9, Res: err2.Error()}
+			}
+			return evalCommError(err2, server)
 		}
+		res = res2
+		err = err2
 	default:
 		log.Fatalln("Wrong or unsupported protocol:", Cfg.Protocol)
 	}
